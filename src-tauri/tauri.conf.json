@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Backtrack",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "identifier": "app.backtrack.desktop",
   "build": {
     "frontendDist": "../ui"
