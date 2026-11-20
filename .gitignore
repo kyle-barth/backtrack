@@ -1,0 +1,16 @@
+# Rust / Tauri build output
+/src-tauri/target/
+/src-tauri/gen/
+
+# Per-machine cargo settings (e.g. a shorter target-dir for a deep checkout folder)
+/src-tauri/.cargo/config.toml
+
+# Release packaging
+/dist/
+
+# Editors and OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini

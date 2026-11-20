@@ -1,0 +1,62 @@
+# Backtrack
+
+**A free, open-source alternative to SteelSeries GG Moments.** Backtrack records the last minute of your game in the background. Press **Alt+S** and that moment is saved as a clip. Trim it, press **E**, and a Discord-sized copy (under 10 MB, no Nitro needed) is on your clipboard, ready to paste.
+
+Everything runs on your PC. There's no account, no cloud and no telemetry.
+
+## What it does
+
+- **Replay buffer.** It keeps the last 60 seconds (or up to 5 minutes) in memory and records on your GPU, so it costs about 1% CPU.
+- **Three audio tracks, like GG.** You get game audio, voice chat (Discord) and your mic, each on its own track, so you can turn any of them down or off later.
+- **A simple trim editor.** It has a waveform for each track, markers and smooth timeline scrubbing.
+- **Discord-ready export.** It picks the best resolution and frame rate that fits 10 MB (or Nitro's 50 / 500 MB, or any size you like) and copies the file to your clipboard.
+- **Works with your GG clips.** Point it at your SteelSeries Moments folder and it picks up game names, trims and the separate audio tracks.
+- **Hotkeys, a tray icon and a small "clip saved" pop-up.** It can also start with Windows.
+
+## Install
+
+1. Download the latest `backtrack-…-windows-x64.zip` from [Releases](https://github.com/kyle-barth/backtrack/releases/latest) and unzip it anywhere.
+2. Install FFmpeg, which Backtrack uses to record and export:
+   ```powershell
+   winget install Gyan.FFmpeg.Essentials
+   ```
+3. Run `backtrack.exe`.
+
+Backtrack needs **Windows 11 (64-bit)**. It has been tested on AMD graphics; NVIDIA (NVENC) and CPU-only recording are built in but have had less testing, so reports are welcome. The app isn't code-signed yet, so Windows may warn you the first time: choose **More info → Run anyway**.
+
+> Coming from GG? Turn off GG's Moments recording (or its Alt+S hotkey) so the two apps don't fight over the same key.
+
+## Hotkeys
+
+| Keys | What it does |
+|---|---|
+| **Alt+S** | Save the replay buffer as a clip |
+| Alt+F9 | Turn the replay buffer on or off |
+| Alt+F8 | Mute your mic in recordings |
+| Alt+F7 | Mark a moment |
+| Ctrl+Alt+B | Open Backtrack |
+
+You can change all of these in Settings.
+
+## Build it yourself
+
+You need Rust (stable, MSVC) and the Visual Studio Build Tools. Then:
+
+```powershell
+cd src-tauri
+cargo run
+```
+
+[DEVELOPMENT.md](DEVELOPMENT.md) explains how it all fits together.
+
+## Contributing
+
+Bug reports, ideas and pull requests are all welcome. Please open an issue first for anything big.
+
+## License
+
+[MIT](LICENSE)
+
+---
+
+Backtrack is an independent project and isn't affiliated with or endorsed by SteelSeries. SteelSeries and SteelSeries GG are trademarks of SteelSeries ApS.

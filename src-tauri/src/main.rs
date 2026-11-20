@@ -1,0 +1,544 @@
+// Backtrack: a local clip library, trimmer and Discord exporter. Everything runs on this PC.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+mod audio;
+mod export;
+mod ffmpeg;
+mod library;
+mod media;
+mod rec_app;
+mod recorder;
+mod settings;
+mod sys;
+mod util;
+mod winutil;
+
+use export::{ExportRequest, ExportResult, Job};
+use ffmpeg::Tools;
+use library::{Clip, Edits, ExportRecord, Library};
+use media::PreparedTrack;
+use notify::{RecursiveMode, Watcher};
+use serde::Serialize;
+use settings::Settings;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
+use std::sync::{mpsc, Arc, Mutex};
+use std::time::Duration;
+use tauri::{AppHandle, Emitter, Manager, State};
+
+const FFMPEG_MISSING: &str = "FFmpeg wasn't found. Install it (winget install Gyan.FFmpeg.Essentials) and restart Backtrack.";
+
+struct AppState {
+    settings: Mutex<Settings>,
+    tools: Mutex<Option<Tools>>,
+    lib: Library,
+    job: Job,
+    watcher: Mutex<Option<notify::RecommendedWatcher>>,
+    thumb_failed: Mutex<HashSet<String>>,
+    recorder: Arc<recorder::Recorder>,
+    /// Registered global shortcut ids → action.
+    hotkey_map: Mutex<Vec<(u32, &'static str)>>,
+    tray_toggle: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
+    told_tray: std::sync::atomic::AtomicBool,
+}
+
+type St<'a> = State<'a, Arc<AppState>>;
+
+impl AppState {
+    /// The resolved ffmpeg tools; looks again if they weren't found earlier (e.g. installed since).
+    fn tools(&self) -> Option<Tools> {
+        let mut t = self.tools.lock().unwrap();
+        if t.is_none() {
+            *t = ffmpeg::locate();
+        }
+        t.clone()
+    }
+
+    fn settings(&self) -> Settings {
+        let mut s = self.settings.lock().unwrap().clone();
+        s.ffmpeg_path = self.tools().map(|t| t.ffmpeg.to_string_lossy().into_owned());
+        s
+    }
+
+    fn scan(&self) -> Vec<Clip> {
+        let dirs = self.settings.lock().unwrap().clip_dirs.clone();
+        self.lib.scan(self.tools().as_ref(), &dirs)
+    }
+
+    fn clip(&self, id: &str) -> Result<Clip, String> {
+        self.lib.get(id).ok_or_else(|| "That clip is no longer in the library.".to_string())
+    }
+}
+
+/// Run blocking work off the main thread.
+async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Send + 'static) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f).await.map_err(|e| e.to_string())?
+}
+
+/// Let the webview load files from these folders through the asset protocol.
+fn allow_dirs(app: &AppHandle, dirs: &[String]) {
+    let scope = app.asset_protocol_scope();
+    for d in dirs {
+        if Path::new(d).is_dir() {
+            let _ = scope.allow_directory(d, true);
+        }
+    }
+}
+
+fn allowed_dirs(st: &AppState) -> Vec<String> {
+    let s = st.settings.lock().unwrap();
+    let mut v = s.clip_dirs.clone();
+    v.push(s.export_dir.clone());
+    v.push(util::cache_dir().to_string_lossy().into_owned());
+    v
+}
+
+/// Watch clip folders; emit `library-changed` once writes settle (a new clip can take a few seconds to save).
+fn start_watcher(app: &AppHandle, st: &Arc<AppState>) {
+    let dirs = st.settings.lock().unwrap().clip_dirs.clone();
+    let (tx, rx) = mpsc::channel::<()>();
+    let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
+        if let Ok(ev) = res {
+            let is_clip = ev.paths.iter().any(|p| {
+                let e = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
+                matches!(e.as_str(), "mp4" | "mov" | "mkv")
+            });
+            if is_clip {
+                let _ = tx.send(());
+            }
+        }
+    });
+    let mut watcher = match watcher {
+        Ok(w) => w,
+        Err(e) => {
+            util::log("error", &format!("watcher: {e}"));
+            return;
+        }
+    };
+    for d in &dirs {
+        if let Err(e) = watcher.watch(Path::new(d), RecursiveMode::NonRecursive) {
+            util::log("warn", &format!("can't watch {d}: {e}"));
+        }
+    }
+    // Replacing the old watcher drops its sender, which ends its debounce thread.
+    *st.watcher.lock().unwrap() = Some(watcher);
+    let app = app.clone();
+    std::thread::spawn(move || {
+        while rx.recv().is_ok() {
+            loop {
+                match rx.recv_timeout(Duration::from_millis(2500)) {
+                    Ok(()) => continue,
+                    Err(mpsc::RecvTimeoutError::Timeout) => break,
+                    Err(mpsc::RecvTimeoutError::Disconnected) => return,
+                }
+            }
+            let _ = app.emit("library-changed", ());
+        }
+    });
+}
+
+/// Generate thumbnails for clips that don't have one (GG usually provides them).
+fn spawn_thumbs(app: AppHandle, st: Arc<AppState>) {
+    if st.lib.thumbs_busy.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    std::thread::spawn(move || {
+        let failed = st.thumb_failed.lock().unwrap().clone();
+        let missing: Vec<_> = st.lib.missing_thumbs().into_iter().filter(|(id, _, _)| !failed.contains(id)).collect();
+        let mut made = 0;
+        if let (Some(tools), false) = (st.tools(), missing.is_empty()) {
+            let dir = util::cache_sub("thumbs");
+            for (id, path, dur) in missing {
+                if media::generate_thumb(&tools, &path, dur, &dir.join(format!("{id}.jpg"))) {
+                    made += 1;
+                } else {
+                    st.thumb_failed.lock().unwrap().insert(id);
+                }
+            }
+        }
+        st.lib.thumbs_busy.store(false, Ordering::SeqCst);
+        if made > 0 {
+            st.scan();
+            let _ = app.emit("library-changed", ());
+        }
+    });
+}
+
+// ------------------------------------------------------------------ commands
+
+#[tauri::command]
+fn get_settings(state: St) -> Settings {
+    state.settings()
+}
+
+#[tauri::command]
+async fn save_settings(app: AppHandle, state: St<'_>, settings: Settings) -> Result<Settings, String> {
+    let st = state.inner().clone();
+    let mut s = settings;
+    s.normalize();
+    s.save()?;
+    let _ = std::fs::create_dir_all(&s.recorder.clips_dir);
+    let old = st.settings.lock().unwrap().clone();
+    let dirs_changed = old.clip_dirs != s.clip_dirs;
+    let new_rec = s.recorder.clone();
+    *st.settings.lock().unwrap() = s;
+    allow_dirs(&app, &allowed_dirs(&st));
+    if dirs_changed {
+        start_watcher(&app, &st);
+        let _ = app.emit("library-changed", ());
+    }
+    rec_app::apply_settings(&app, &old.recorder, &new_rec);
+    Ok(st.settings())
+}
+
+#[tauri::command]
+async fn list_clips(app: AppHandle, state: St<'_>) -> Result<Vec<Clip>, String> {
+    let st = state.inner().clone();
+    let st2 = st.clone();
+    let clips = blocking(move || Ok(st2.scan())).await?;
+    spawn_thumbs(app, st);
+    Ok(clips)
+}
+
+#[tauri::command]
+fn set_favourite(state: St, clip_id: String, fav: bool) -> Result<(), String> {
+    state.lib.set_fav(&clip_id, fav)
+}
+
+#[tauri::command]
+fn save_edits(state: St, clip_id: String, edits: Edits) -> Result<(), String> {
+    state.lib.save_edits(&clip_id, edits)
+}
+
+#[tauri::command]
+async fn get_waveform(state: St<'_>, clip_id: String, track: usize, points: usize) -> Result<Vec<f32>, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let tools = st.tools().ok_or(FFMPEG_MISSING)?;
+        let clip = st.clip(&clip_id)?;
+        media::waveform(&st.lib, &tools, &clip, track, points)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn get_keyframes(state: St<'_>, clip_id: String) -> Result<Vec<f64>, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let tools = st.tools().ok_or(FFMPEG_MISSING)?;
+        let clip = st.clip(&clip_id)?;
+        media::keyframes(&tools, &clip).map(|k| k.as_ref().clone())
+    })
+    .await
+}
+
+#[tauri::command]
+async fn prepare_audio(state: St<'_>, clip_id: String) -> Result<Vec<PreparedTrack>, String> {
+    let st = state.inner().clone();
+    blocking(move || {
+        let tools = st.tools().ok_or(FFMPEG_MISSING)?;
+        let clip = st.clip(&clip_id)?;
+        media::prepare_audio(&tools, &clip)
+    })
+    .await
+}
+
+#[tauri::command]
+async fn export_clip(app: AppHandle, state: St<'_>, req: ExportRequest) -> Result<ExportResult, String> {
+    let st = state.inner().clone();
+    if st.job.running.swap(true, Ordering::SeqCst) {
+        return Err("Another export is already running.".into());
+    }
+    st.job.cancel.store(false, Ordering::SeqCst);
+    let st2 = st.clone();
+    let result = blocking(move || {
+        let tools = st2.tools().ok_or(FFMPEG_MISSING)?;
+        let clip = st2.clip(&req.clip_id)?;
+        let out_dir = PathBuf::from(st2.settings.lock().unwrap().export_dir.clone());
+        let ctx = export::ExportCtx { tools: &tools, clip: &clip, out_dir, job: &st2.job };
+        let emitter = app.clone();
+        let (res, _plan) = export::export(&ctx, &req, |p| {
+            let _ = emitter.emit("export-progress", p);
+        })?;
+        let _ = st2.lib.add_export(
+            &clip.id,
+            ExportRecord {
+                path: res.path.clone(),
+                size_bytes: res.size_bytes,
+                preset: req.preset.clone(),
+                width: res.width,
+                height: res.height,
+                fps: res.fps,
+                at: util::now_ms(),
+            },
+        );
+        allow_dirs(&app, &allowed_dirs(&st2));
+        util::log("info", &format!("exported {} ({} bytes in {:.1}s)", res.path, res.size_bytes, res.elapsed_sec));
+        Ok(res)
+    })
+    .await;
+    st.job.running.store(false, Ordering::SeqCst);
+    result
+}
+
+#[tauri::command]
+fn cancel_export(state: St) {
+    state.job.cancel();
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SavedCopy {
+    path: String,
+    size_bytes: u64,
+}
+
+#[tauri::command]
+async fn save_trimmed_copy(state: St<'_>, clip_id: String, start: f64, end: f64) -> Result<SavedCopy, String> {
+    let st = state.inner().clone();
+    if st.job.running.swap(true, Ordering::SeqCst) {
+        return Err("An export is running; try again when it finishes.".into());
+    }
+    st.job.cancel.store(false, Ordering::SeqCst);
+    let st2 = st.clone();
+    let result = blocking(move || {
+        let tools = st2.tools().ok_or(FFMPEG_MISSING)?;
+        let clip = st2.clip(&clip_id)?;
+        let out_dir = PathBuf::from(st2.settings.lock().unwrap().export_dir.clone());
+        let out = export::save_trimmed_copy(&tools, &clip, start, end, &out_dir, &st2.job)?;
+        let size = std::fs::metadata(&out).map(|m| m.len()).unwrap_or(0);
+        let _ = st2.lib.add_export(
+            &clip.id,
+            ExportRecord {
+                path: out.to_string_lossy().into_owned(),
+                size_bytes: size,
+                preset: "lossless".into(),
+                width: clip.width,
+                height: clip.height,
+                fps: clip.fps.round() as u32,
+                at: util::now_ms(),
+            },
+        );
+        Ok(SavedCopy { path: out.to_string_lossy().into_owned(), size_bytes: size })
+    })
+    .await;
+    st.job.running.store(false, Ordering::SeqCst);
+    result
+}
+
+#[tauri::command]
+fn copy_file(path: String) -> Result<(), String> {
+    sys::copy_file(&path)
+}
+
+#[tauri::command]
+fn reveal(path: String) -> Result<(), String> {
+    sys::reveal(&path)
+}
+
+#[tauri::command]
+fn open_path(path: String) -> Result<(), String> {
+    sys::open_path(&path)
+}
+
+#[tauri::command]
+fn open_discord() -> Result<(), String> {
+    sys::open_discord()
+}
+
+#[tauri::command]
+fn trash_clip(app: AppHandle, state: St, clip_id: String) -> Result<(), String> {
+    let clip = state.clip(&clip_id)?;
+    sys::trash(&clip.path)?;
+    state.lib.forget(&clip_id);
+    util::log("info", &format!("moved to Recycle Bin: {}", clip.path));
+    let _ = app.emit("library-changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+fn log(level: String, msg: String) {
+    util::log(&format!("ui:{level}"), &msg);
+}
+
+fn main() {
+    util::log("info", "Backtrack starting");
+    let settings = Settings::load();
+    let state = Arc::new(AppState {
+        settings: Mutex::new(settings),
+        tools: Mutex::new(ffmpeg::locate()),
+        lib: Library::load(),
+        job: Job::default(),
+        watcher: Mutex::new(None),
+        thumb_failed: Mutex::new(HashSet::new()),
+        recorder: recorder::Recorder::new(),
+        hotkey_map: Mutex::new(Vec::new()),
+        tray_toggle: Mutex::new(None),
+        told_tray: std::sync::atomic::AtomicBool::new(false),
+    });
+    match &*state.tools.lock().unwrap() {
+        Some(t) => util::log("info", &format!("ffmpeg: {}", t.ffmpeg.display())),
+        None => util::log("warn", "ffmpeg not found"),
+    }
+    let background = std::env::args().any(|a| a == "--background");
+
+    tauri::Builder::default()
+        // A second launch just brings the running Backtrack to the front.
+        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| rec_app::show_main(app)))
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(
+            tauri_plugin_global_shortcut::Builder::new()
+                .with_handler(|app, shortcut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        rec_app::on_hotkey(app, shortcut);
+                    }
+                })
+                .build(),
+        )
+        .manage(state.clone())
+        .on_window_event(|window, event| {
+            // Closing the main window while the buffer runs keeps Backtrack recording in the tray.
+            if let tauri::WindowEvent::CloseRequested { api, .. } = event {
+                if window.label() == "main" {
+                    let app = window.app_handle();
+                    let st = app.state::<Arc<AppState>>();
+                    if st.recorder.is_running() {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        if !st.told_tray.swap(true, Ordering::SeqCst) {
+                            rec_app::toast(app, "Still recording in the tray", "Right-click the tray icon to quit", "info");
+                        }
+                    } else {
+                        app.exit(0);
+                    }
+                }
+            }
+        })
+        .setup(move |app| {
+            let handle = app.handle().clone();
+            let _ = std::fs::create_dir_all(&state.settings.lock().unwrap().recorder.clips_dir);
+            allow_dirs(&handle, &allowed_dirs(&state));
+            start_watcher(&handle, &state);
+            // Warm the library in the background so the first list_clips is quick.
+            let st = state.clone();
+            std::thread::spawn(move || {
+                st.scan();
+            });
+            if let Some(win) = app.get_webview_window("main") {
+                // Fit the window on smaller or scaled displays.
+                if let Ok(Some(m)) = win.current_monitor() {
+                    let size = m.size().to_logical::<f64>(m.scale_factor());
+                    if size.width < 1500.0 || size.height < 960.0 {
+                        let _ = win.maximize();
+                    }
+                }
+                // Started with Windows: stay in the tray.
+                if !background {
+                    let _ = win.show();
+                }
+            }
+            if let Err(e) = rec_app::build_tray(&handle) {
+                util::log("error", &format!("tray: {e}"));
+            }
+            rec_app::register_hotkeys(&handle);
+            rec_app::status_pump(handle.clone());
+            if state.settings.lock().unwrap().recorder.enabled {
+                rec_app::start_recorder(&handle);
+            }
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            get_settings,
+            save_settings,
+            list_clips,
+            set_favourite,
+            save_edits,
+            get_waveform,
+            get_keyframes,
+            prepare_audio,
+            export_clip,
+            cancel_export,
+            save_trimmed_copy,
+            copy_file,
+            reveal,
+            open_path,
+            open_discord,
+            trash_clip,
+            log,
+            rec_app::recorder_status,
+            rec_app::set_buffer,
+            rec_app::save_replay,
+            rec_app::toggle_mic_mute,
+            rec_app::add_marker,
+            rec_app::list_audio_devices,
+            rec_app::list_monitors,
+            rec_app::suspend_hotkeys
+        ])
+        .build(tauri::generate_context!())
+        .expect("error while building Backtrack")
+        .run(|app, event| {
+            // Make sure the capture process never outlives the app.
+            if let tauri::RunEvent::Exit = event {
+                app.state::<Arc<AppState>>().recorder.stop();
+            }
+        });
+}
+
+#[cfg(test)]
+mod e2e {
+    //! Runs against the real SteelSeries Moments folder: `cargo test -- --ignored --nocapture`
+    use super::*;
+
+    #[test]
+    #[ignore]
+    fn scan_waveform_audio_and_export_real_clip() {
+        let tools = ffmpeg::locate().expect("ffmpeg");
+        let s = Settings::default();
+        assert!(!s.clip_dirs.is_empty(), "no SteelSeries Moments folder");
+        let lib = Library::load();
+        let t = std::time::Instant::now();
+        let clips = lib.scan(Some(&tools), &s.clip_dirs);
+        println!("scanned {} clips in {:.1}s", clips.len(), t.elapsed().as_secs_f64());
+        let games: HashSet<&str> = clips.iter().map(|c| c.game.as_str()).collect();
+        println!("games: {games:?}");
+        println!("missing thumbs: {}", lib.missing_thumbs().len());
+        let clip = clips.iter().find(|c| c.file_name == "Rocket-League__2026-11-20__00-01-27.mp4").expect("RL clip");
+        println!("clip: {} {}x{}@{:.0} {:.2}s tracks={:?} edits={:?} thumb={:?}",
+            clip.game, clip.width, clip.height, clip.fps, clip.duration,
+            clip.audio_tracks.iter().map(|a| &a.name).collect::<Vec<_>>(), clip.edits, clip.thumb.is_some());
+
+        let t = std::time::Instant::now();
+        let w = media::waveform(&lib, &tools, clip, 2, 500).unwrap();
+        println!("waveform mic: {} pts, max {:.2}, {:.2}s", w.len(), w.iter().cloned().fold(0.0, f32::max), t.elapsed().as_secs_f64());
+        let t = std::time::Instant::now();
+        let tracks = media::prepare_audio(&tools, clip).unwrap();
+        println!("prepared {} tracks in {:.2}s", tracks.len(), t.elapsed().as_secs_f64());
+
+        let out_dir = util::cache_sub("e2e-exports");
+        let job = Job::default();
+        let ctx = export::ExportCtx { tools: &tools, clip, out_dir: out_dir.clone(), job: &job };
+        let edits = clip.edits.clone().unwrap_or(Edits { in_t: 24.0, out_t: 48.0, markers: vec![] });
+        for (preset, limit, canvas) in [("d10", Some(10.0), "16:9"), ("d10", Some(10.0), "9:16")] {
+            let req = ExportRequest {
+                clip_id: clip.id.clone(), start: edits.in_t, end: edits.out_t, preset: preset.into(), limit_mb: limit,
+                canvas: canvas.into(), crop_x: 0.5,
+                tracks: vec![
+                    export::TrackMix { index: 0, volume: 1.0, muted: false },
+                    export::TrackMix { index: 1, volume: 0.8, muted: false },
+                    export::TrackMix { index: 2, volume: 0.7, muted: true },
+                ],
+                file_name: format!("e2e_{preset}_{}", canvas.replace(':', "x")), copy_to_clipboard: false,
+            };
+            let mut last = 0.0;
+            let (res, plan) = export::export(&ctx, &req, |p| last = p.percent).unwrap();
+            println!("{preset} {canvas}: {:.2} MB {}x{}@{} v={}k a={}k mode={} in {:.1}s (plan v={}k) last%={last}",
+                res.size_bytes as f64 / 1e6, res.width, res.height, res.fps, res.video_kbps, res.audio_kbps, res.mode,
+                res.elapsed_sec, plan.video_kbps);
+            assert!(res.size_bytes as f64 <= 10e6, "over 10 MB");
+            assert!(res.size_bytes as f64 >= 8.0e6, "wasted the budget");
+            let probe = tools.ffprobe_cmd().args(["-v", "error", "-show_entries", "stream=codec_name,width,height,r_frame_rate:format=duration", "-of", "compact"]).arg(&res.path).output().unwrap();
+            println!("{}", String::from_utf8_lossy(&probe.stdout));
+        }
+    }
+}

@@ -1,0 +1,131 @@
+# Builds Backtrack for Windows and publishes it on the Releases page.
+#
+# Two ways to start it:
+#   - push a tag:  git tag v0.2.0 && git push origin v0.2.0
+#     (the version is taken from the tag)
+#   - Actions → Release → Run workflow, enter a version such as 0.2.0
+#     (bumps the version in Cargo.toml / tauri.conf.json, commits, tags, then publishes)
+# A version with a suffix (0.2.0-beta.1) is published as a pre-release.
+name: Release
+
+on:
+  push:
+    tags: ['v*.*.*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to release, e.g. 0.2.0'
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: windows-latest
+    defaults:
+      run:
+        shell: pwsh
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Work out the version
+        id: ver
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          EVENT: ${{ github.event_name }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          $v = if ($env:EVENT -eq 'workflow_dispatch') { $env:INPUT_VERSION } else { $env:REF_NAME }
+          $v = $v.Trim() -replace '^v', ''
+          if ($v -notmatch '^\d+\.\d+\.\d+(-[0-9A-Za-z.-]+)?$') { throw "'$v' isn't a version like 1.2.3 or 1.2.3-beta.1" }
+          if ($env:EVENT -eq 'workflow_dispatch' -and (git ls-remote --tags origin "refs/tags/v$v")) { throw "Tag v$v already exists" }
+          "version=$v" >> $env:GITHUB_OUTPUT
+          "tag=v$v" >> $env:GITHUB_OUTPUT
+          "prerelease=$([bool]($v -match '-'))".ToLower() >> $env:GITHUB_OUTPUT
+          Write-Host "Releasing v$v"
+
+      - name: Set the version in Cargo.toml and tauri.conf.json
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          function Set-FirstMatch($path, $pattern, $replacement) {
+            $path = (Resolve-Path $path).Path   # .NET resolves relative paths against its own current directory, not PowerShell's
+            $text = [IO.File]::ReadAllText($path)
+            $new = ([regex]$pattern).Replace($text, $replacement, 1)
+            if ($new -eq $text -and $text -notmatch [regex]::Escape($replacement)) { throw "No version found in $path" }
+            [IO.File]::WriteAllText($path, $new)
+          }
+          Set-FirstMatch 'src-tauri/Cargo.toml' '(?m)^version = "[^"]*"' "version = `"$env:VERSION`""
+          Set-FirstMatch 'src-tauri/tauri.conf.json' '"version":\s*"[^"]*"' "`"version`": `"$env:VERSION`""
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+
+      - name: Test
+        working-directory: src-tauri
+        run: cargo test --release
+
+      - name: Build
+        working-directory: src-tauri
+        run: cargo build --release
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $name = "backtrack-v$env:VERSION-windows-x64"
+          New-Item -ItemType Directory -Force "dist/$name" | Out-Null
+          Copy-Item src-tauri/target/release/backtrack.exe, README.md, LICENSE "dist/$name/"
+          Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
+          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
+          "$hash  $name.zip" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Get-ChildItem dist -File | Format-Table Name, Length
+
+      - name: Commit the version bump and tag it
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          TAG: ${{ steps.ver.outputs.tag }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add src-tauri/Cargo.toml src-tauri/Cargo.lock src-tauri/tauri.conf.json
+          git diff --cached --quiet
+          if ($LASTEXITCODE -ne 0) { git commit -m "Release $env:TAG"; if ($LASTEXITCODE) { throw 'commit failed' } }
+          git tag -a $env:TAG -m "Backtrack $env:TAG"; if ($LASTEXITCODE) { throw 'tag failed' }
+          git push origin "HEAD:refs/heads/$env:BRANCH"; if ($LASTEXITCODE) { throw "push to $env:BRANCH failed" }
+          git push origin $env:TAG; if ($LASTEXITCODE) { throw 'pushing the tag failed' }
+
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ steps.ver.outputs.tag }}
+          VERSION: ${{ steps.ver.outputs.version }}
+          PRERELEASE: ${{ steps.ver.outputs.prerelease }}
+        run: |
+          $notes = @"
+          ## Install
+
+          1. Download **backtrack-v$env:VERSION-windows-x64.zip** below and unzip it anywhere.
+          2. Install FFmpeg once: ``winget install Gyan.FFmpeg.Essentials``
+          3. Run ``backtrack.exe``, then press **Alt+S** in a game to save the last 60 seconds.
+
+          Needs Windows 11 (64-bit). The app isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info**, then **Run anyway**.
+
+          "@
+          Set-Content -Path notes.md -Value $notes
+          $flags = @()
+          if ($env:PRERELEASE -eq 'true') { $flags += '--prerelease' }
+          # PowerShell doesn't expand wildcards for native commands, so list the files
+          $assets = (Get-ChildItem dist -File).FullName
+          gh release create $env:TAG @assets --title "Backtrack $env:TAG" --notes-file notes.md --generate-notes @flags
+          if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }

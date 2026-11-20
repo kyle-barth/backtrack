@@ -1,0 +1,37 @@
+[package]
+name = "backtrack"
+version = "0.1.0"
+description = "Open-source replay buffer, clip editor and Discord exporter for Windows"
+edition = "2021"
+license = "MIT"
+repository = "https://github.com/kyle-barth/backtrack"
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = ["protocol-asset", "tray-icon", "image-png"] }
+tauri-plugin-global-shortcut = "2"
+tauri-plugin-single-instance = "2"
+wasapi = "0.27"
+windows-sys = { version = "0.59", features = ["Win32_Foundation", "Win32_System_Pipes", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_Security", "Win32_UI_WindowsAndMessaging", "Win32_System_Threading", "Win32_System_ProcessStatus", "Win32_Media_Audio", "Win32_System_Diagnostics_ToolHelp", "Win32_System_SystemInformation", "Win32_Graphics_Gdi"] }
+tauri-plugin-dialog = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+notify = "6"
+clipboard-win = "5"
+trash = "5"
+open = "5"
+dirs = "5"
+
+[features]
+# Always serve the frontend embedded from ../ui (there is no dev server).
+default = ["custom-protocol"]
+custom-protocol = ["tauri/custom-protocol"]
+
+[profile.release]
+codegen-units = 1
+lto = true
+opt-level = "s"
+panic = "abort"
+strip = true
