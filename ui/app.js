@@ -86,18 +86,34 @@ document.addEventListener('error',e=>{
 
 /* ================================================================== TOAST + POPOVER + CONFIRM */
 let toastT=0;
-/* action = {label, kbd, icon, fn}: e.g. Undo after a one-click trim. Toasts with an action stay longer and take clicks. */
+/* action = {label, kbd, icon, fn, ms}: e.g. Undo after a one-click trim. Toasts with an action stay longer and take clicks. */
 function toast(msg,icon='check-c',action){
-  const t=$('#toast'),a=$('#toastAct');$('use',t).setAttribute('href','#i-'+icon);const m=$('#toastMsg');m.textContent=msg;m.title=msg;
-  if(action){a.hidden=false;a.innerHTML=`${ic(action.icon||'undo','xs')}${esc(action.label)}${action.kbd?`<kbd>${action.kbd}</kbd>`:''}`;a.onclick=()=>{t.classList.remove('show');action.fn();};}
+  const t=$('#toast'),a=$('#toastAct'),undo=!!(action&&action.undo);if(!undo)pauseUndo();$('use',t).setAttribute('href','#i-'+icon);const m=$('#toastMsg');m.textContent=msg;m.title=msg;
+  if(action){a.hidden=false;a.innerHTML=`${ic(action.icon||'undo','xs')}${esc(action.label)}${action.kbd?`<kbd>${action.kbd}</kbd>`:''}`;a.onclick=()=>{t.classList.remove('show');action.fn();if(!undo)setTimeout(showUndo,300);};}
   else{a.hidden=true;a.onclick=null;}
-  t.classList.toggle('has-act',!!action);t.classList.add('show');clearTimeout(toastT);
-  toastT=setTimeout(()=>t.classList.remove('show'),action?6000:icon==='alert'?4500:2400);
+  t.classList.toggle('has-act',!!action);t.classList.toggle('is-undo',undo);t.classList.add('show');clearTimeout(toastT);
+  // when another toast ends while a library Undo is still live, the Undo comes back for the time it has left
+  toastT=setTimeout(()=>{t.classList.remove('show');if(!undo)setTimeout(showUndo,300);},action?(action.ms||6000):icon==='alert'?4500:2400);
 }
 function fail(what,e){const m=errMsg(e);BT.log('error',`${what}: ${m}`);toast(`${what} · ${m}`,'alert');}
+/* library Undo (a move to the Recycle Bin, a bulk ★): 6 s of visible Undo. Another toast or a dialog can cover its toast; its
+   clock pauses while it's covered, Ctrl+Z keeps working meanwhile, and the toast comes back afterwards with the time it had left. */
+let libUndo=null;
+function undoToast(msg,icon,fn,label){libUndo={fn,msg,icon,label:label||'Undo',until:Date.now()+6000,pausedAt:0};showUndo();}
+function pauseUndo(){const t=$('#toast');if(libUndo&&!libUndo.pausedAt&&t.classList.contains('show')&&t.classList.contains('is-undo'))libUndo.pausedAt=Date.now();}
+function resumeUndo(u){if(u&&u.pausedAt){u.until+=Date.now()-u.pausedAt;u.pausedAt=0;}}
+function showUndo(){
+  const u=libUndo;if(!u||!$('#confirmLayer').hidden)return;   // a dialog is up: it comes back when the dialog closes
+  resumeUndo(u);const left=u.until-Date.now();if(left<800){libUndo=null;return;}
+  toast(u.msg,u.icon,{label:u.label,kbd:cur()==='library'?'Ctrl Z':'',icon:'undo',undo:true,ms:left,fn:()=>{if(libUndo===u)libUndo=null;u.fn();}});
+}
+function runUndo(){
+  const u=libUndo;libUndo=null;resumeUndo(u);if(!u||Date.now()>u.until)return false;
+  const t=$('#toast');if(t.classList.contains('is-undo'))t.classList.remove('show');u.fn();return true;
+}
 
 let popEl=null;
-function closePop(){if(popEl){popEl.remove();popEl=null;}}
+function closePop(){if(popEl){popEl.remove();popEl=null;}$$('.menu-for').forEach(x=>x.classList.remove('menu-for'));}
 function placePop(p,anchor,align,at){
   document.body.appendChild(p);popEl=p;
   const r=at?{left:at.x,right:at.x,top:at.y,bottom:at.y}:anchor.getBoundingClientRect(),pw=p.offsetWidth,ph=p.offsetHeight;
@@ -122,35 +138,78 @@ function openKeys(anchor){
     return `<div class="kr"><span class="kk">${ks.map(k=>k.map(x=>`<kbd>${x}</kbd>`).join('')).join('<span class="muted">/</span>')}</span><span>${lbl}</span></div>`;}).join('');
   placePop(p,anchor,'right');
 }
-let cfResolve=null;
+let cfResolve=null,cfKeep=false,cfBack=null;
+const shown=el=>!!el&&el.isConnected&&el.getClientRects().length>0&&getComputedStyle(el).visibility!=='hidden'&&!el.closest('[inert]');
+/* o = {title, sub, html, ok, no:'Cancel', okCls:'danger', icon:'trash', tone:'bad', keep}. keep: a yes resolves but leaves the
+   dialog open, so the caller can show cfBusy() and then close it (closeConfirm(true,true)) or ask again with new content. */
 function confirmBox(o){
   return new Promise(res=>{
-    if(cfResolve)cfResolve(false);cfResolve=res;
-    $('#cfTitle').textContent=o.title;$('#cfSub').textContent=o.sub||'';$('#cfText').innerHTML=o.html;$('#cfOk').textContent=o.ok;
-    closePop();$('#confirmLayer').hidden=false;$('#app').inert=true;$('#modalLayer').inert=true;
-    setTimeout(()=>{const b=$('#confirm .btn[data-cf="no"]');b&&b.focus();},0);   // a destructive dialog focuses Cancel
+    if(cfResolve)cfResolve(false);cfResolve=res;cfKeep=!!o.keep;
+    const L=$('#confirmLayer'),fresh=L.hidden;if(fresh){cfBack=document.activeElement;pauseUndo();$('#toast').classList.remove('show');}   // no toast over a dialog (a live Undo comes back after)
+    cfBusy(null);cfFill(o);
+    closePop();L.hidden=false;$('#app').inert=true;$('#modalLayer').inert=true;
+    if(!fresh)$('#confirm').animate([{opacity:.6},{opacity:1}],{duration:160});
+    setTimeout(()=>{const b=$('#cfNo');b&&b.focus();},0);   // a destructive dialog focuses Cancel
   });
 }
-function closeConfirm(v){
-  if($('#confirmLayer').hidden)return;$('#confirmLayer').hidden=true;$('#modalLayer').inert=false;$('#app').inert=!$('#modalLayer').hidden;
-  const r=cfResolve;cfResolve=null;r&&r(v);
+/* content and look; also updates an open dialog in place (e.g. when "Keep favourites" changes what will happen).
+   o.wait: OK is disabled and says what it's waiting for (the Recycle Bin check); o.alt: a third, middle button. */
+function cfFill(o){
+  const m=$('#confirm'),a=document.activeElement,aid=m.contains(a)&&a.id;
+  $('#cfTitle').textContent=o.title;$('#cfSub').textContent=o.sub||'';$('#cfText').innerHTML=o.html;
+  const mi=$('#confirm .m-ico');mi.className='m-ico '+(o.tone||'bad');$('use',mi).setAttribute('href','#i-'+(o.icon||'trash'));
+  // a waiting OK stays focusable (aria-disabled, clicks ignored), so Tab doesn't skip it onto "Keep them"
+  const ok=$('#cfOk');ok.className='btn '+(o.okCls==null?'danger':o.okCls);ok.setAttribute('aria-disabled',o.wait?'true':'false');
+  if(o.wait)ok.innerHTML=`<span class="spin"></span>${esc(o.ok)}`;else ok.textContent=o.ok;
+  const alt=$('#cfAlt');alt.hidden=!o.alt;alt.textContent=o.alt||'';$('#cfNo').textContent=o.no||'Cancel';
+  m.classList.toggle('perm',!!o.perm);m.classList.toggle('wide',!!o.alt);
+  // keep focus where it was; if that control went away or is waiting, Cancel
+  if(aid){const b=document.getElementById(aid);(b&&!b.disabled&&shown(b)?b:$('#cfNo')).focus({preventScroll:true});}
 }
-$('#confirmLayer').addEventListener('click',e=>{const b=e.target.closest('[data-cf]');if(b)closeConfirm(b.dataset.cf==='yes');});
+/* busy: all buttons wait, Esc and the scrim do nothing, the OK button shows what's happening */
+function cfBusy(label){
+  const m=$('#confirm'),on=!!label;m.classList.toggle('busy',on);m.setAttribute('aria-busy',on);
+  $('#cfNo').disabled=on;$('#cfOk').disabled=on;$('#cfAlt').disabled=on;$$('#cfText button').forEach(b=>b.disabled=on);
+  if(on)$('#cfOk').innerHTML=`<span class="spin"></span>${esc(label)}`;
+}
+/* v: true (OK), 'alt' (the middle button) or false; with keep, a yes resolves and the dialog stays for the caller */
+function closeConfirm(v,force){
+  const L=$('#confirmLayer');if(L.hidden||(!force&&$('#confirm').classList.contains('busy')))return;
+  const r=cfResolve;cfResolve=null;
+  if(v&&cfKeep&&!force){r&&r(v);return;}
+  L.hidden=true;cfBusy(null);$('#modalLayer').inert=false;$('#app').inert=!$('#modalLayer').hidden;
+  // focus goes back where it was; if the library re-rendered underneath (library-changed), to the same clip's new card
+  if(shown(cfBack))cfBack.focus({preventScroll:true});
+  else if(!v&&cfBack&&!cfBack.isConnected&&cfBack.closest&&cfBack.dataset&&(cfBack.dataset.clip||cfBack.classList.contains('sel-ck'))&&cur()==='library')focusLib(cfBack.dataset.clip||cfBack.dataset.sel);
+  cfBack=null;r&&r(v);setTimeout(showUndo,0);
+}
+$('#confirmLayer').addEventListener('click',e=>{
+  const rv=e.target.closest('[data-cfreview]');if(rv){closeConfirm(false);openReview();return;}   // "see which" from the out-of-view note
+  const b=e.target.closest('[data-cf]');if(b&&!b.disabled&&b.getAttribute('aria-disabled')!=='true')closeConfirm(b.dataset.cf==='yes'?true:b.dataset.cf==='alt'?'alt':false);
+});
+/* Tab stays inside the dialog */
+function cfTrap(e){
+  const f=$$('#confirm button:not([disabled])').filter(shown),i=f.indexOf(document.activeElement);if(!f.length)return;
+  if(i<0||(e.shiftKey&&i===0)||(!e.shiftKey&&i===f.length-1)){e.preventDefault();f[i<0?0:e.shiftKey?f.length-1:0].focus();}
+}
 async function copyText(s){
   try{await navigator.clipboard.writeText(s);return true;}
   catch(_){const ta=document.createElement('textarea');ta.value=s;ta.style.cssText='position:fixed;opacity:0';document.body.appendChild(ta);ta.select();let ok=false;try{ok=document.execCommand('copy');}catch(__){}ta.remove();return ok;}
 }
 
 /* ================================================================== LIBRARY */
-const lib={filter:'all',q:'',sort:'new',group:'game'};
+const lib={filter:'all',q:'',sort:'new',group:'game',selView:null,prev:null,emptied:null};   // filter: all | fav | shared | <gameId> | sel (Review; prev = where Back goes)
 const SORTS={new:['Newest first',(a,b)=>b.recordedAt-a.recordedAt],old:['Oldest first',(a,b)=>a.recordedAt-b.recordedAt],long:['Longest',(a,b)=>b.duration-a.duration],big:['Largest',(a,b)=>b.sizeBytes-a.sizeBytes]};
 function renderSide(){
+  // the items are rebuilt: a keyboard user on one stays on it
+  const af=document.activeElement,fk=af&&af.closest&&af.closest('.side [data-f]')?af.dataset.f:null;
   const favN=S.clips.filter(c=>c.fav).length,shN=S.clips.filter(isShared).length,ready=S.loaded&&!S.loadError;
   const top=[['all','clips','All clips',S.clips.length],['fav','star','Favourites',favN],['shared','chat','Shared to Discord',shN]];
   $('#sideTop').innerHTML=top.map(([id,icn,l,n])=>`<button class="side-item${lib.filter===id?' on':''}" data-f="${id}">${ic(icn)}<span class="nm">${l}</span><span class="n">${ready?n:''}</span></button>`).join('');
-  $('#sideGames').innerHTML=S.games.length?S.games.map(g=>`<button class="side-item${lib.filter===g.id?' on':''}" data-f="${esc(g.id)}" title="${esc(g.name)}">${gameIcon(g,'gi')}<span class="nm">${esc(g.name)}</span><span class="n">${g.count}</span></button>`).join('')
+  $('#sideGames').innerHTML=S.games.length?S.games.map(g=>`<button class="side-item${lib.filter===g.id?' on':''}" data-f="${esc(g.id)}" title="${esc(g.name)}">${gameIcon(g,'gi')}<span class="nm">${esc(g.name)}</span><span class="sel-n" data-seln="${esc(g.id)}"></span><span class="n">${g.count}</span></button>`).join('')
     :`<div class="side-empty">${ready?'No games yet':S.loaded?'':'Loading…'}</div>`;
-  renderStorage();renderBufCard();
+  renderStorage();renderBufCard();markSide();
+  const fb=fk&&$(`.side [data-f="${CSS.escape(fk)}"]`);if(fb)fb.focus({preventScroll:true});
 }
 function renderStorage(){
   const total=S.clips.reduce((s,c)=>s+c.sizeBytes,0),n=S.clips.length;
@@ -168,9 +227,9 @@ function cardHTML(c,opt={}){
   const fresh=isNewClip(c),d=new Date(c.recordedAt);
   const title=opt.showGame?c.game:whenLabel(d);
   const meta=opt.showGame?`${whenLabel(d)} · ${fmtMB(MBof(c.sizeBytes))}`:`${fmtMB(MBof(c.sizeBytes))} · ${c.height}p${fpsR(c)}`;
-  return `<article class="card${fresh?' new':''}" data-clip="${esc(c.id)}" tabindex="0">
+  return `<article class="card${fresh?' new':''}${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}" tabindex="0" aria-label="${esc(cardLbl(c))}">
     <div class="thumb">${thumbHTML(c.thumb)}${fresh?'<span class="badge-new">New</span>':''}<span class="dur">${fmtLen(c.duration)}</span>
-      <div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>
+      <div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}
       <button class="quick" data-quick="${esc(c.id)}" data-tip="Export for Discord" aria-label="Export for Discord">${ic('upload','sm')}</button></div>
     <div class="card-body"><div class="card-text"><div class="card-title" title="${esc(title)}">${esc(title)}</div><div class="card-meta">${meta}</div></div>
       <div class="flags">${flagsHTML(c)}</div></div>
@@ -183,7 +242,7 @@ function refreshClipUI(c){
 }
 function moreTile(g,shown){
   const left=g.count-shown,c=g.clips[shown]||g.clips[0];
-  return `<article class="card more-tile" data-more="${esc(g.id)}" tabindex="0"><div class="thumb">${thumbHTML(c.thumb)}<div class="more-in"><b>+${left}</b><span>more ${esc(g.name)} clips</span></div></div>
+  return `<article class="card more-tile" data-more="${esc(g.id)}" tabindex="0"><div class="thumb">${thumbHTML(c.thumb)}<div class="more-in"><b>+${left}</b><span>more ${esc(g.name)} clips</span><em class="more-sel"></em></div></div>
     <div class="card-body"><div class="card-text"><div class="card-title">View all ${g.count}</div><div class="card-meta">${fmtTotal(g.bytes)} in total</div></div></div></article>`;
 }
 /* Quick send exports a planned part of the clip (UX review r2 #3): inside the saved In/Out if the clip was trimmed,
@@ -200,7 +259,7 @@ function heroHTML(){
   const range=`${fmtLen(qp.inT)}–${fmtLen(qp.outT)}`;
   const sess=S.clips.slice(1,3);
   return `<section class="hero">
-    <div class="hero-thumb" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true})}${fresh?'<span class="badge-new">New</span>':''}<span class="dur">${fmtLen(c.duration)}</span><div class="thumb-hover"><span class="play-c">${ic('play')}</span></div></div>
+    <div class="hero-thumb${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true})}${fresh?'<span class="badge-new">New</span>':''}<span class="dur">${fmtLen(c.duration)}</span><div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}</div>
     <div class="hero-info">
       <div class="eyebrow" id="heroEyebrow" data-ts="${c.recordedAt}" data-fresh="${fresh?1:0}"><span class="dot"></span>${fresh?'Just saved':'Newest clip'} · ${ago(c.recordedAt)}</div>
       <h2>${esc(c.game)} — ${whenLabel(d)}</h2>
@@ -209,7 +268,7 @@ function heroHTML(){
     </div>
     <div class="hero-session">${sess.length?`<div class="cap" style="color:var(--text-3)">Recent</div>`+sess.map(s=>{
       const sub=[s.gameId!==c.gameId?esc(s.game):'',fmtMB(MBof(s.sizeBytes)),isShared(s)?'shared':''].filter(Boolean).join(' · ');
-      return `<div class="mini" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true})}<span class="dur" style="right:4px;bottom:4px;font-size:10.5px;padding:2px 4px">${fmtLen(s.duration)}</span></div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
+      return `<div class="mini${sel.ids.has(s.id)?' is-sel':''}" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true})}<span class="dur" style="right:4px;bottom:4px;font-size:10.5px;padding:2px 4px">${fmtLen(s.duration)}</span></div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
     </div></section>`;
 }
 function ffBanner(){
@@ -226,6 +285,8 @@ function emptyHTML(){
     :'Already have clips from SteelSeries GG? Add your <code>Videos\\SteelSeries Moments</code> folder in Settings.';
   return `<div class="empty"><div class="empty-ico">${ic('clips')}</div><b>No clips yet</b><p>${how} ${more}</p><button class="btn" data-go="settings-folders">${ic('folder','sm')}Add a clip folder</button></div>`;
 }
+// right after a move took the last clip: say so (and offer Undo) instead of the first-run "No clips yet"
+const emptiedHTML=m=>`<div class="empty"><div class="empty-ico">${ic('trash')}</div><b>${m.moved?'You moved all your clips to the Recycle Bin':'You deleted all your clips'}</b><p>${m.moved?`${m.deleted?`${nClips(m.deleted)} of them were deleted permanently. `:''}Undo brings ${m.deleted?'the others':'them'} back, or you can restore them from the Windows Recycle Bin.`:'New clips you save will show up here.'}</p>${m.moved&&lastMove?`<button class="btn" id="emptyUndo">${ic('undo','sm')}Undo</button>`:''}</div>`;
 const loadingHTML=()=>`<div class="empty"><div class="spin"></div><b>Loading your clips…</b><p>The first scan reads every clip once, so it can take a few seconds.</p></div>`;
 const noneHTML=(t,s)=>`<div class="empty"><b>${t}</b>${s}</div>`;
 
@@ -243,6 +304,7 @@ function feed(root,items,o={}){
         if(it.group!=null){s.className='grp';s.innerHTML=it.group+'<div class="grid"></div>';grid=s.lastElementChild;}else{s.className='grid';grid=s;}
         root.insertBefore(s,sentinel);}
       else{grid.insertAdjacentHTML('beforeend',it.card);n++;}}
+    if(sel.ids.size||sel.failed.size)markSel(root);   // the card strings were built before the latest selection change
     if(i>=items.length){sentinel.remove();if(feedMore===pump)feedMore=null;if(o.foot)root.insertAdjacentHTML('beforeend',`<div class="lib-count">${o.foot}</div>`);}
   }
   const near=()=>sentinel.isConnected&&sentinel.getBoundingClientRect().top<sc.getBoundingClientRect().bottom+900;
@@ -264,23 +326,42 @@ function bucketOf(ts){
   return [3+back,MONTH[d.getMonth()]+(d.getFullYear()!==now.getFullYear()?' '+d.getFullYear():'')];
 }
 function renderLibrary(keepScroll){
+  for(const id of sel.ids)if(!S.byId[id]){sel.ids.delete(id);sel.failed.delete(id);sel.bulk.delete(id);}   // gone (trashed, moved, folder removed)
+  for(const id of sel.pending)if(S.byId[id]){sel.ids.add(id);sel.pending.delete(id);}   // back from the Recycle Bin (Undo)
+  if(S.clips.length)lib.emptied=null;
+  // a game view whose last clip just went (or a review of a selection that's now empty): back to All clips, from the top
+  if(S.loaded&&(lib.filter==='sel'?!selOn():!['all','fav','shared'].includes(lib.filter)&&!S.G[lib.filter])){
+    // an emptied Review goes back to where its "‹" pointed when that view still exists
+    const p=lib.filter==='sel'&&lib.prev,ok=p&&(['all','fav','shared'].includes(p.filter)||S.G[p.filter]);
+    lib.filter=ok?p.filter:'all';lib.q=ok?p.q:'';$('#search').value=lib.q;if(lib.filter!=='sel')lib.prev=null;keepScroll=false;$('#libScroll').scrollTop=0;}
+  const ae=document.activeElement,aeLib=!!ae&&ae!==document.body&&$('.lib').contains(ae);
+  const fcard=keepScroll&&ae&&ae.closest&&ae.closest('#libScroll .card[data-clip]'),focusId=fcard&&fcard.dataset.clip;
   renderSide();
-  const tEl=$('#libTitle'),sc=$('#libScroll'),st=keepScroll?sc.scrollTop:0;stopFeed();
+  const tEl=$('#libTitle'),sc=$('#libScroll'),st=keepScroll?sc.scrollTop:0;stopFeed();grpMap=new Map();
+  // keep what you were looking at in place, not just the pixel offset: the first card at the top that's still here after the change
+  let anchors=null;
+  if(keepScroll){const top=sc.getBoundingClientRect().top;anchors=[];for(const el of $$('#libScroll .card[data-clip]')){const b=el.getBoundingClientRect();if(b.bottom<=top+4)continue;anchors.push([el.dataset.clip,b.top-top]);if(anchors.length>=40)break;}}
   $('#sortLbl').textContent=SORTS[lib.sort][0];
   $$('#groupSeg button').forEach(b=>b.classList.toggle('on',b.dataset.g===lib.group));
-  if(!S.loaded||!S.settings){tEl.innerHTML=`<div><h1>All clips</h1><div class="sub">Scanning your clip folders…</div></div>`;sc.innerHTML=loadingHTML();return;}
+  if(!S.loaded||!S.settings){tEl.innerHTML=`<div><h1>All clips</h1><div class="sub">Scanning your clip folders…</div></div>`;sc.innerHTML=loadingHTML();syncSel();return;}
   if(S.loadError){tEl.innerHTML=`<div><h1>All clips</h1><div class="sub">Couldn't load clips</div></div>`;
-    sc.innerHTML=`<div class="empty"><div class="empty-ico">${ic('alert')}</div><b>Couldn't load your clips</b><p>${esc(S.loadError)}</p><button class="btn" id="retryLoad">${ic('reset','sm')}Try again</button></div>`;return;}
+    sc.innerHTML=`<div class="empty"><div class="empty-ico">${ic('alert')}</div><b>Couldn't load your clips</b><p>${esc(S.loadError)}</p><button class="btn" id="retryLoad">${ic('reset','sm')}Try again</button></div>`;syncSel();return;}
   const banner=ffBanner();
-  if(!S.clips.length){tEl.innerHTML=`<div><h1>All clips</h1><div class="sub">No clips yet</div></div>`;sc.innerHTML=banner+emptyHTML();return;}
-  if(!['all','fav','shared'].includes(lib.filter)&&!S.G[lib.filter])lib.filter='all';
+  if(!S.clips.length){tEl.innerHTML=`<div><h1>All clips</h1><div class="sub">No clips${lib.emptied?'':' yet'}</div></div>`;sc.innerHTML=banner+(lib.emptied?emptiedHTML(lib.emptied):emptyHTML());syncSel();
+    if(aeLib&&!ae.isConnected)focusLib();return;}
   const q=lib.q.trim().toLowerCase(),sorter=SORTS[lib.sort][1],fill=st+sc.clientHeight+200;
   if(q){
-    const res=S.clips.filter(c=>{const d=new Date(c.recordedAt);return (c.game+' '+whenLabel(d)+' '+longDate(d)+' '+c.fileName).toLowerCase().includes(q);}).sort(sorter);
+    const res=S.clips.filter(c=>matchQ(c,q)).sort(sorter);
     tEl.innerHTML=`<div><h1>Results for “${esc(lib.q)}”</h1><div class="sub">${res.length} clip${res.length===1?'':'s'}</div></div>`;
     sc.innerHTML=banner;
     if(res.length)feed(sc,[{grid:true},...res.map(c=>({card:cardHTML(c,{showGame:true})}))],{fill});
     else sc.insertAdjacentHTML('beforeend',noneHTML('No clips match',`Try a game name like “${esc(S.games[0].name)}” or a day like “yesterday”.`));
+  } else if(lib.filter==='sel'){   // "Review": exactly what's selected, wherever it was picked (deselected ones stay until you leave)
+    const list=viewClips().sort(sorter),games=new Set(list.map(c=>c.gameId)).size;
+    const p=lib.prev||{filter:'all',q:''};
+    const back=viewLbl(p.filter,p.q);
+    tEl.innerHTML=`<button class="btn ghost rv-back" data-rvback data-tip="Back to ${esc(back)}, keeping the selection · Esc" data-tip-pos="b" aria-label="Back to ${esc(back)}">${ic('chev-l')}<span>${esc(back)}</span></button><span class="sep-v"></span><div><h1>Selected clips</h1><div class="sub">${nClips(list.length)} · ${fmtTotal(selBytes(list))} · ${games} game${games===1?'':'s'}</div></div>`;
+    sc.innerHTML=banner;feed(sc,[{grid:true},...list.map(c=>({card:cardHTML(c,{showGame:true})}))],{fill});
   } else if(S.G[lib.filter]){
     const g=S.G[lib.filter],list=[...g.clips].sort(sorter);
     tEl.innerHTML=`${gameIcon(g)}<div><h1>${esc(g.name)}</h1><div class="sub">${g.count} clip${g.count===1?'':'s'} · ${fmtTotal(g.bytes)}</div></div>`;
@@ -297,20 +378,28 @@ function renderLibrary(keepScroll){
     sc.innerHTML=banner+heroHTML();
     if(lib.group==='game'){
       const order=[...S.games].sort((a,b)=>sorter([...a.clips].sort(sorter)[0],[...b.clips].sort(sorter)[0]));
-      sc.insertAdjacentHTML('beforeend',order.map(g=>{const list=[...g.clips].sort(sorter).slice(0,3);
-        return `<section class="grp"><div class="grp-head">${gameIcon(g)}<h2>${esc(g.name)}</h2><span class="meta">${g.count} clip${g.count===1?'':'s'} · ${fmtTotal(g.bytes)}</span><button class="link" data-f="${esc(g.id)}">View all${ic('chev-r','xs')}</button></div>
+      sc.insertAdjacentHTML('beforeend',order.map(g=>{const list=[...g.clips].sort(sorter).slice(0,3);grpMap.set('g:'+g.id,g.clips.map(c=>c.id));
+        return `<section class="grp"><div class="grp-head">${gameIcon(g)}<h2>${esc(g.name)}</h2><span class="meta">${g.count} clip${g.count===1?'':'s'} · ${fmtTotal(g.bytes)}<span class="grp-n"></span></span>${grpSelHTML('g:'+g.id,g.count,g.name)}<button class="link" data-f="${esc(g.id)}">View all${ic('chev-r','xs')}</button></div>
           <div class="grid">${list.map(c=>cardHTML(c)).join('')}${g.count>3?moreTile(g,3):''}</div></section>`;}).join(''));
     } else {
       const groups=new Map();
       for(const c of S.clips){const [rank,label]=bucketOf(c.recordedAt);let b=groups.get(label);if(!b){b={rank,label,cs:[]};groups.set(label,b);}b.cs.push(c);}
       const items=[];
-      [...groups.values()].sort((a,b)=>lib.sort==='old'?b.rank-a.rank:a.rank-b.rank).forEach(b=>{
-        items.push({group:`<div class="grp-head"><h2>${b.label}</h2><span class="meta">${b.cs.length} clip${b.cs.length>1?'s':''}</span></div>`});
+      [...groups.values()].sort((a,b)=>lib.sort==='old'?b.rank-a.rank:a.rank-b.rank).forEach(b=>{grpMap.set('d:'+b.label,b.cs.map(c=>c.id));
+        items.push({group:`<div class="grp-head"><h2>${b.label}</h2><span class="meta">${b.cs.length} clip${b.cs.length>1?'s':''}<span class="grp-n"></span></span>${grpSelHTML('d:'+b.label,b.cs.length,b.label)}</div>`});
         b.cs.sort(sorter).forEach(c=>items.push({card:cardHTML(c,{showGame:true})}));});
       feed(sc,items,{fill});
     }
   }
-  if(keepScroll)sc.scrollTop=st;
+  if(keepScroll){
+    sc.scrollTop=st;
+    for(const [id,off] of anchors||[]){const el=$(`#libScroll .card[data-clip="${CSS.escape(id)}"]`);if(el){sc.scrollTop+=el.getBoundingClientRect().top-sc.getBoundingClientRect().top-off;break;}}
+  }
+  syncSel();
+  // a re-render (library-changed, a move, a view change) keeps keyboard focus on the same clip when it's still here,
+  // and never lets it fall to <body> when it was somewhere in the library (a "View all" link, a card that went)
+  const fc=focusId&&$(`#libScroll .card[data-clip="${CSS.escape(focusId)}"]`);if(fc)fc.focus({preventScroll:true});
+  else if(aeLib&&!ae.isConnected&&(document.activeElement===document.body||!document.activeElement))focusLib();
 }
 // keep "Just saved · 3 min ago" honest while the window stays open
 setInterval(()=>{const e=$('#heroEyebrow');if(!e||cur()!=='library')return;const ts=+e.dataset.ts;e.lastChild.textContent=`${e.dataset.fresh==='1'?'Just saved':'Newest clip'} · ${ago(ts)}`;},30000);
@@ -319,57 +408,437 @@ document.addEventListener('click',e=>{
   const gt=e.target.closest('[data-go]');if(gt){go(gt.dataset.go);return;}
   if(!e.target.closest('.lib'))return;
   if(e.target.closest('#retryLoad')){loadAll();return;}
+  if(e.target.closest('#emptyUndo')){restoreMoved(lastMove);return;}
+  const ck=e.target.closest('[data-sel]');if(ck){selClick(ck.dataset.sel,e);return;}
+  const gs=e.target.closest('[data-grpsel]');if(gs){const ids=grpMap.get(gs.dataset.grpsel)||[];setSel(ids,!ids.every(id=>sel.ids.has(id)),true);return;}
+  if(e.target.closest('[data-rvback]')){leaveReview();return;}
   const f=e.target.closest('[data-f]');if(f){lib.filter=f.dataset.f;lib.q='';$('#search').value='';$('#libScroll').scrollTop=0;renderLibrary();return;}
   const q=e.target.closest('[data-quick]');if(q){e.stopPropagation();const c=S.byId[q.dataset.quick];if(c){openClip(c);go('export');}return;}
   const mo=e.target.closest('[data-more]');if(mo){lib.filter=mo.dataset.more;$('#libScroll').scrollTop=0;renderLibrary();return;}
   const sd=e.target.closest('[data-send]');if(sd){quickSend(S.byId[sd.dataset.send]);return;}
   const op=e.target.closest('[data-open]');if(op){const c=S.byId[op.dataset.open];if(c){openClip(c);go('editor');}return;}
   const fo=e.target.closest('[data-folder]');if(fo){const c=S.byId[fo.dataset.folder];if(c)BT.reveal(c.path).catch(err=>fail("Couldn't open the folder",err));return;}
-  const cl=e.target.closest('[data-clip]');if(cl){const c=S.byId[cl.dataset.clip];if(c){openClip(c);go('editor');}return;}
+  // while selecting, a click on any clip (card, hero, recent) toggles it; Ctrl/Shift+click starts selecting.
+  // A double-click opens it in both modes: its second click puts back what the first one toggled.
+  const cl=e.target.closest('[data-clip]');if(cl){const c=S.byId[cl.dataset.clip];if(!c)return;
+    if(e.detail===2&&dblSel&&dblSel.id===c.id&&Date.now()-dblSel.t<700){setSel([c.id],dblSel.was);dblSel=null;openClip(c);go('editor');return;}
+    if(selOn()||e.ctrlKey||e.metaKey||e.shiftKey){dblSel=e.shiftKey||e.ctrlKey||e.metaKey?null:{id:c.id,was:sel.ids.has(c.id),t:Date.now()};selClick(c.id,e);return;}
+    openClip(c);go('editor');return;}
 });
+let dblSel=null;
 document.addEventListener('contextmenu',e=>{
   if(e.target.closest('input,textarea'))return;
   const card=e.target.closest('.lib [data-clip]');
   if(!card){if(!BT.isMock)e.preventDefault();return;}  // no browser menu in the app
   e.preventDefault();const c=S.byId[card.dataset.clip];if(!c)return;
+  // the Menu key / Shift+F10 opens it at the focused card instead of the window corner
+  let at={x:e.clientX,y:e.clientY};if(!at.x&&!at.y){const r=card.getBoundingClientRect();at={x:r.left+16,y:r.top+16};}
+  if(card.classList.contains('card'))card.classList.add('menu-for');   // which card the menu belongs to
+  if(sel.ids.has(c.id)){   // a selected clip: this clip first (check it, find it), then what acts on the whole selection
+    const n=sel.ids.size,cs=selClips(),allFav=cs.every(x=>x.fav);
+    openPop(null,[
+      {k:'open',icon:'play',label:'Open in editor',right:'Enter'},
+      {k:'folder',icon:'folder',label:'Show in folder'},
+      {k:'desel',icon:'box',label:'Deselect this clip',right:'Space'},
+      {sep:true},
+      {k:'fav',icon:allFav?'star-f':'star',label:allFav?`Remove ${n===1?'it':'all '+n} from Favourites`:`Add ${n===1?'it':'all '+n} to Favourites`},
+      {k:'clear',icon:'x',label:'Clear selection',right:'Esc'},
+      {k:'trash',icon:'trash',label:n===1?'Move to Recycle Bin…':`Move ${n} clips to Recycle Bin…`,right:'Del'},
+    ],it=>{
+      if(it.k==='open'){openClip(c);go('editor');}
+      else if(it.k==='folder')BT.reveal(c.path).catch(err=>fail("Couldn't open the folder",err));
+      else if(it.k==='fav')favSelected();else if(it.k==='desel')setSel([c.id],false);else if(it.k==='clear')clearSel();else if(it.k==='trash')trashSelected();
+    },'left',at,{head:`<div><b>${n} selected</b>${fmtTotal(selBytes(cs))}</div>`});
+    return;
+  }
   const qp=quickPlan(c);
   openPop(null,[
+    ...(selOn()?[{k:'add',icon:'check',label:'Add to selection',right:'Ctrl+click'},{sep:true}]:[]),
     {k:'open',icon:'scissors',label:'Trim & export'},
     {k:'send',icon:'bolt',label:`Quick send · ${fmtSecs(qp.len)}`,sub:`${fmtLen(qp.inT)}–${fmtLen(qp.outT)} · ${planWhy(qp)}`},
     {k:'opts',icon:'upload',label:'Export options…'},
     {k:'fav',icon:c.fav?'star-f':'star',label:c.fav?'Remove from Favourites':'Add to Favourites'},
     {k:'folder',icon:'folder',label:'Show in folder'},
-    {k:'trash',icon:'trash',label:'Move to Recycle Bin…'},
+    {sep:true},
+    ...(selOn()?[]:[{k:'select',icon:'check',label:'Select',right:'Ctrl+click'}]),
+    {k:'trash',icon:'trash',label:'Move to Recycle Bin…',right:selOn()?'':'Del'},
   ],it=>{
     if(it.k==='open'){openClip(c);go('editor');}
     else if(it.k==='send')quickSend(c);
     else if(it.k==='opts'){openClip(c);go('export');}
     else if(it.k==='fav')toggleFav(c);
     else if(it.k==='folder')BT.reveal(c.path).catch(err=>fail("Couldn't open the folder",err));
+    else if(it.k==='select'||it.k==='add')selClick(c.id);
     else if(it.k==='trash')trashClip(c);
-  },'left',{x:e.clientX,y:e.clientY});
+  },'left',at);
 });
 $('#search').addEventListener('input',e=>{lib.q=e.target.value;renderLibrary();});
 $('#groupSeg').addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;lib.group=b.dataset.g;if(lib.filter!=='all')lib.filter='all';renderLibrary();});
 $('#sortBtn').addEventListener('click',e=>openPop(e.currentTarget,Object.entries(SORTS).map(([k,v])=>({k,label:v[0],on:lib.sort===k})),it=>{lib.sort=it.k;renderLibrary();},'right'));
 
 async function toggleFav(c){
-  if(!c)return;const v=!c.fav;c.fav=v;if(ed.clip===c)syncFav();refreshClipUI(c);
+  if(!c)return;const v=!c.fav;c.fav=v;favLast=null;if(ed.clip===c)syncFav();refreshClipUI(c);
   try{await BT.setFavourite(c.id,v);toast(v?'Added to Favourites':'Removed from Favourites','star');}
   catch(e){c.fav=!v;if(ed.clip===c)syncFav();refreshClipUI(c);fail("Couldn't update Favourites",e);}
 }
+/* ---------- multi-select. The selection is a set of clip ids: it outlives re-renders and view changes (search, filter,
+   sort, group). The bar always counts everything selected and says when some of it isn't in the current view, the
+   sidebar shows how many per game, and the confirm lists them by game, so nothing gets deleted without being shown. */
+const sel={ids:new Set(),anchor:null,failed:new Map(),base:null,ranged:false,   // failed: clipId → why the last move failed
+  bulk:new Set(),      // picked by a Select all / group / range / Ctrl+A rather than one by one ("Keep favourites" default)
+  pending:new Set(),pendingT:0,say:''};   // pending: restored by Undo, selected again once library-changed lists them
+const selOn=()=>sel.ids.size>0;
+let grpMap=new Map();   // 'g:<gameId>' | 'd:<day label>' → every clip id in that group (By game shows only 3 of them)
+let lastMove=null;      // {ids, reselect}: what the last move sent to the Recycle Bin, for Undo
+const matchQ=(c,q)=>{const d=new Date(c.recordedAt);return (c.game+' '+whenLabel(d)+' '+longDate(d)+' '+c.fileName).toLowerCase().includes(q);};
+const nClips=n=>`${n} clip${n===1?'':'s'}`;
+const clipLbl=c=>`${c.game} — ${whenLabel(new Date(c.recordedAt))}`;
+// what a screen reader says on a focused card
+const skippedWhy=w=>String(w||'').startsWith('Skipped');   // left out on purpose (Move N, skip D:), not a failure
+const cardLbl=c=>`${c.game}, ${whenLabel(new Date(c.recordedAt))}${sel.ids.has(c.id)?', selected':''}${sel.failed.has(c.id)?`, ${skippedWhy(sel.failed.get(c.id))?'':'couldn’t move: '}${sel.failed.get(c.id)}`:''}`;
+const selClips=()=>[...sel.ids].map(id=>S.byId[id]).filter(Boolean);
+const selBytes=cs=>cs.reduce((s,c)=>s+c.sizeBytes,0);
+const selCk=c=>`<button class="sel-ck" data-sel="${esc(c.id)}" role="checkbox" aria-checked="${sel.ids.has(c.id)}" aria-label="Select ${esc(clipLbl(c))}" tabindex="-1" data-tip="Select · Ctrl+click"><i class="cbx"></i></button>`;
+const grpSelHTML=(k,n,name)=>`<button class="link grp-sel" data-grpsel="${esc(k)}" role="checkbox" aria-checked="false" aria-label="Select all ${n} ${esc(name)} clips"><i class="cbx"></i>Select all</button>`;
+/* every clip the current view stands for, not just the cards rendered so far (By game: also the ones behind "+N more") */
+function viewClips(){
+  const q=lib.q.trim().toLowerCase();
+  if(q)return S.clips.filter(c=>matchQ(c,q));
+  if(lib.filter==='sel')return (lib.selView||[]).map(id=>S.byId[id]).filter(Boolean);
+  if(S.G[lib.filter])return S.G[lib.filter].clips;
+  if(lib.filter==='fav'||lib.filter==='shared')return S.clips.filter(lib.filter==='fav'?c=>c.fav:isShared);
+  return S.clips;
+}
+const viewLbl=(f,q)=>q?`Results for “${q}”`:f==='fav'?'Favourites':f==='shared'?'Shared to Discord':S.G[f]?S.G[f].name:'All clips';
+function setSel(ids,on,bulk){
+  for(const id of ids){if(!S.byId[id])continue;if(on){sel.ids.add(id);if(bulk)sel.bulk.add(id);else sel.bulk.delete(id);}else{sel.ids.delete(id);sel.failed.delete(id);sel.bulk.delete(id);}}
+  if(!sel.ids.size)sel.anchor=null;sel.base=null;favLast=null;syncSel();
+}
+function clearSel(){sel.ids.clear();sel.failed.clear();sel.bulk.clear();sel.anchor=null;sel.base=null;favLast=null;if(lib.filter==='sel')renderLibrary();else syncSel();}   // leaving Review too
+const selectView=on=>setSel(viewClips().map(c=>c.id),on,true);
+/* the cards from a to b as they appear on screen: By game only has the 3 shown per game, never the ones behind "+N more" */
+function rangeIds(a,b){const ids=[...new Set($$('#libScroll .card[data-clip]').map(x=>x.dataset.clip))],i=ids.indexOf(a),j=ids.indexOf(b);return i<0||j<0?null:ids.slice(Math.min(i,j),Math.max(i,j)+1);}
+/* arrow keys move between the rendered cards (and "+N more" tiles) in reading order; Up/Down keep the column */
+function cardNav(card,key){
+  const all=$$('#libScroll .card'),i=all.indexOf(card);
+  if(key==='ArrowLeft')return all[i-1]||null;if(key==='ArrowRight')return all[i+1]||null;
+  if(key==='Home')return all[0]||null;if(key==='End')return all[all.length-1]||null;
+  const r=card.getBoundingClientRect(),cx=r.left+r.width/2,dn=key==='ArrowDown',R=new Map(all.map(x=>[x,x.getBoundingClientRect()]));
+  const cand=all.filter(x=>dn?R.get(x).top>r.bottom-2:R.get(x).bottom<r.top+2);if(!cand.length)return null;
+  const top=(dn?Math.min:Math.max)(...cand.map(x=>R.get(x).top)),row=cand.filter(x=>Math.abs(R.get(x).top-top)<4);
+  return row.reduce((b,x)=>{const q=R.get(x),d=Math.abs(q.left+q.width/2-cx);return !b||d<b.d?{x,d}:b;},null).x;
+}
+/* keyboard focus never falls to <body>: the clip if it's still here, else the first card, else the grid itself */
+function focusLib(id){
+  const el=(id&&$(`#libScroll .card[data-clip="${CSS.escape(id)}"]`))||$('#libScroll .card')||$('#libScroll');
+  el.focus({preventScroll:true});if(el.classList.contains('card'))el.scrollIntoView({block:'nearest'});
+}
+/* click / Ctrl+click toggles; Shift+click gives the whole range the state the clicked clip takes (so it can also deselect) */
+function selClick(id,e){
+  const c=S.byId[id];if(!c)return;
+  if(e&&e.shiftKey&&sel.anchor&&sel.anchor!==id){const r=rangeIds(sel.anchor,id);if(r){sel.ranged=true;setSel(r,!sel.ids.has(id),true);sel.anchor=id;return;}}
+  const on=!sel.ids.has(id);sel.anchor=id;sel.say=`${on?'Selected':'Deselected'} ${clipLbl(c)}`;setSel([id],on);
+}
+/* paint the selection onto whatever is rendered (cards, hero, recent, group heads, "+N more" tiles) */
+function markSel(root){
+  $$('[data-clip]',root).forEach(x=>{
+    const id=x.dataset.clip,on=sel.ids.has(id),why=sel.failed.get(id);x.classList.toggle('is-sel',on);
+    if(x.classList.contains('card')&&S.byId[id])x.setAttribute('aria-label',cardLbl(S.byId[id]));
+    const b=$('.sel-ck',x);if(b&&b.getAttribute('aria-checked')!==String(on))b.setAttribute('aria-checked',on);
+    const t=$('.thumb',x)||(x.classList.contains('hero-thumb')?x:null),fb=t&&$('.fail-b',t);
+    if(why&&t&&!fb)t.insertAdjacentHTML('beforeend',`<span class="fail-b" data-tip="${esc(why)}" aria-hidden="true">${ic('alert','xs')}${skippedWhy(why)?'Skipped':'Couldn’t move'}</span>`);
+    else if(!why&&fb)fb.remove();
+  });
+  $$('[data-grpsel]',root).forEach(b=>{
+    const ids=grpMap.get(b.dataset.grpsel)||[],n=ids.reduce((s,id)=>s+sel.ids.has(id),0);
+    b.setAttribute('aria-checked',n&&n===ids.length?'true':n?'mixed':'false');
+    const m=$('.grp-n',b.parentElement);if(m)m.textContent=n?`${n} selected`:'';
+  });
+  $$('[data-more]',root).forEach(t=>{
+    const g=S.G[t.dataset.more],seen=new Set($$('.card[data-clip]',t.parentElement).map(x=>x.dataset.clip)),m=$('.more-sel',t);
+    const n=g?g.clips.reduce((s,c)=>s+(sel.ids.has(c.id)&&!seen.has(c.id)),0):0;if(m)m.textContent=n?`${n} selected`:'';
+  });
+}
+function markSide(){
+  const per=new Map();for(const c of selClips())per.set(c.gameId,(per.get(c.gameId)||0)+1);
+  $$('#sideGames [data-seln]').forEach(s=>{const n=per.get(s.dataset.seln)||0,g=S.G[s.dataset.seln],all=g&&n===g.count;s.textContent=n?(all?'All':n):'';s.title=n?(all?'All selected':`${n} selected`):'';});
+}
+let liveT=0,liveN=0;
+function syncSel(){
+  const on=selOn(),bar=$('#selBar');
+  $('.lib').classList.toggle('selecting',on);markSel($('#libScroll'));markSide();
+  bar.classList.toggle('show',on&&S.loaded);bar.inert=!on;
+  if(lib.filter==='sel'){   // Review's header follows the selection as you untick things
+    const sv=viewClips(),still=sv.filter(c=>sel.ids.has(c.id)),s=$('#libTitle .sub');
+    if(s)s.textContent=still.length===sv.length?`${nClips(sv.length)} · ${fmtTotal(selBytes(sv))} · ${new Set(sv.map(c=>c.gameId)).size} game${new Set(sv.map(c=>c.gameId)).size===1?'':'s'}`:`${still.length} of ${sv.length} still selected · ${fmtTotal(selBytes(still))}`;
+  }
+  if(on){
+    const cs=selClips(),n=cs.length,view=viewClips(),vs=new Set(view.map(c=>c.id)),inV=cs.filter(c=>vs.has(c.id)).length,out=n-inV;
+    const nf=cs.filter(c=>sel.failed.has(c.id)).length,failedOnly=nf&&nf===n,size=fmtTotal(selBytes(cs));
+    $('#selN').textContent=`${n} selected`;
+    const parts=failedOnly?[`<span class="warn">${cs.every(c=>skippedWhy(sel.failed.get(c.id)))?'Skipped: no Recycle Bin':'Couldn’t be moved'}</span>`,size]:[size,out?`<span class="warn">${out} not in this view</span>`:'',n===1&&!sel.ranged?'Shift+click selects a range':''];
+    const sub=$('#selSub');sub.innerHTML=parts.filter(Boolean).join(' · ');
+    const rv=$('#selShow'),inRv=lib.filter==='sel';rv.classList.toggle('on',inRv);
+    rv.setAttribute('aria-label',`${inRv?'Showing':'Review'} ${n} selected clip${n===1?'':'s'}, ${size}${nf?`, ${nf} couldn’t be moved`:''}${out?`, ${out} not in this view`:''}`);
+    rv.dataset.tip=(inRv?'Showing the selected clips':'Review: show only the selected clips')+` · ${sub.textContent}`;
+    const all=$('#selAll'),every=view.length>0&&inV===view.length;
+    all.setAttribute('aria-checked',every?'true':inV?'mixed':'false');all.disabled=!view.length;
+    $('#selAllLbl').textContent=`Select all ${view.length}`;
+    all.dataset.tip=every?'Deselect everything in this view':lib.q.trim()?'Every search result · Ctrl+A':lib.filter==='all'&&lib.group==='game'?'Every clip, including the ones behind “+N more” · Ctrl+A':'Every clip in this view, including ones further down · Ctrl+A';
+    const allFav=cs.every(c=>c.fav),fv=$('#selFav');$('use',fv).setAttribute('href',allFav?'#i-star-f':'#i-star');fv.classList.toggle('on',allFav);
+    const takeBack=favLast&&favLast.key===selKey();   // ★ again right after a bulk ★ takes that one back
+    fv.dataset.tip=takeBack?`Take back the last ★: ${favLast.val?'remove the':'re-add the'} ${favLast.ids.length} it changed`:allFav?`Remove ${n===1?'it':'all '+n} from Favourites`:`Add ${n===1?'it':'all '+n} to Favourites`;fv.setAttribute('aria-label',fv.dataset.tip);
+  }
+  // screen readers: one polite announcement once the clicking settles: which clip changed (one at a time), then the count
+  clearTimeout(liveT);liveT=setTimeout(()=>{const n=sel.ids.size,say=sel.say;sel.say='';if(n===liveN&&!say)return;liveN=n;
+    $('#selLive').textContent=(say?say+'. ':'')+(n?`${nClips(n)} selected, ${fmtTotal(selBytes(selClips()))}`:'Selection cleared');},350);
+}
+/* Review: exactly what's selected, from any view. Back (or Esc) returns to where you were, with the selection kept. */
+function openReview(){
+  if(!selOn())return;if(lib.filter!=='sel')lib.prev={filter:lib.filter,q:lib.q};
+  lib.filter='sel';lib.selView=[...sel.ids];lib.q='';$('#search').value='';$('#libScroll').scrollTop=0;renderLibrary();focusLib();
+}
+function leaveReview(){
+  const p=lib.prev||{filter:'all',q:''};lib.prev=null;lib.filter=p.filter;lib.q=p.q;$('#search').value=p.q;$('#libScroll').scrollTop=0;renderLibrary();focusLib();
+}
+$('#selShow').addEventListener('click',()=>{if(lib.filter!=='sel')openReview();});
+$('#selClear').addEventListener('click',()=>{const inBar=$('#selBar').contains(document.activeElement),a=sel.anchor;clearSel();if(inBar)focusLib(a);});
+$('#selAll').addEventListener('click',()=>{const v=viewClips();selectView(!(v.length&&v.every(c=>sel.ids.has(c.id))));});
+$('#selFav').addEventListener('click',()=>favSelected());
+$('#selDel').addEventListener('click',()=>trashSelected());
+
+/* bulk ★: one set_favourites, and an Undo that puts back exactly the clips it changed (it never touches the others).
+   ★ pressed again on the same selection, before anything else changes it, is that same Undo: after "Add all 269" it puts
+   the 243 it added back out, so the 26 you had are never lost to an add-then-remove. */
+let favLast=null;   // {key, ids, val}: the last bulk ★ and the selection it was made on
+const selKey=()=>[...sel.ids].sort().join(',');
+async function applyFav(cs,val){
+  const paint=()=>{cs.forEach(c=>$$(`.lib [data-clip="${CSS.escape(c.id)}"] .flags`).forEach(f=>f.innerHTML=flagsHTML(c)));if(ed.clip&&cs.includes(ed.clip))syncFav();if(lib.filter==='fav')renderLibrary(true);else{renderSide();syncSel();}};
+  const was=new Map(cs.map(c=>[c.id,c.fav]));cs.forEach(c=>c.fav=val);paint();
+  try{await BT.setFavourites(cs.map(c=>c.id),val);return true;}catch(e){cs.forEach(c=>c.fav=was.get(c.id));paint();fail("Couldn't update Favourites",e);return false;}
+}
+async function favSelected(){
+  const key=selKey();
+  if(favLast&&favLast.key===key){   // take back the last bulk ★ instead of toggling everything the other way
+    const fl=favLast,back=fl.ids.map(id=>S.byId[id]).filter(Boolean);favLast=null;if(libUndo&&libUndo.fav===fl)libUndo=null;
+    if(await applyFav(back,!fl.val))toast(`Favourites restored · ${fl.val?'took':'put'} ${nClips(back.length)} ${fl.val?'back out':'back in'}`,'star');
+    return;
+  }
+  const cs=selClips(),v=!cs.every(c=>c.fav),ch=cs.filter(c=>c.fav!==v);if(!ch.length)return;
+  if(!await applyFav(ch,v))return;
+  const fl={key:selKey(),ids:ch.map(c=>c.id),val:v};favLast=fl;
+  undoToast(`${v?'Added':'Removed'} ${nClips(ch.length)} ${v?'to':'from'} Favourites`,'star',async()=>{
+    if(favLast===fl)favLast=null;if(await applyFav(fl.ids.map(id=>S.byId[id]).filter(Boolean),!v))toast('Favourites restored','star');});
+  libUndo.fav=fl;syncSel();
+}
+
+/* ---------- can the Recycle Bin keep these? perm = clips on a drive that would delete them for good: no Recycle Bin, set to
+   delete straight away, or a batch bigger than that drive's Recycle Bin (Windows makes room by purging its oldest items).
+   Each drive entry lists its clipIds (contract, round 3), so nothing is guessed from paths. */
+async function binCheck(cs){
+  if(!cs.length)return {ok:true,fits:true,bad:[],perm:[]};
+  try{
+    const r=await BT.trashCheck(cs.map(c=>c.id));if(r.fits)return {ok:true,fits:true,bad:[],perm:[]};
+    let bad=(r.drives||[]).filter(d=>d.permanent||(d.capacity!=null&&d.bytes>d.capacity));if(!bad.length)bad=r.drives||[];
+    const ids=new Set(bad.flatMap(d=>d.clipIds||[]));
+    let perm=cs.filter(c=>ids.has(c.id));if(!perm.length)perm=cs;   // can't tell which clips: promise nothing
+    return {ok:true,fits:false,bad,perm};
+  }catch(e){BT.log('warn',`trash_check failed: ${errMsg(e)}`);return {ok:false,err:errMsg(e),fits:true,bad:[],perm:[]};}
+}
+/* why they can't be kept, in a red callout (or, if the check itself failed, a quiet note that drops the restore promise) */
+function binWarn(chk,n,p){
+  if(!chk.ok)return `<div class="cf-note warn">${ic('alert','xs')}<span>Backtrack couldn’t check that the Recycle Bin has room for ${n===1?'it':'them'}.</span></div>`;
+  if(chk.fits)return '';
+  const cap=chk.bad.find(d=>!d.permanent&&d.capacity!=null);
+  const why=chk.bad.map(d=>d.permanent?`Drive ${esc(d.drive)} doesn’t keep deleted files: it has no Recycle Bin (a USB or network drive, for example) or it’s set to delete files straight away.`
+    :`The Recycle Bin on drive ${esc(d.drive)} holds up to ${fmtTotal(d.capacity)}, and ${p===1?'this clip is':'these clips are'} ${fmtTotal(d.bytes)}. To make room, Windows would permanently delete its oldest items, which can include ${p===1?'this one':'some of these'}.`);
+  // honest, not "move it in smaller batches": each batch pushes the previous ones out of a full Recycle Bin
+  const tip=cap?`<span class="cf-tip">The Recycle Bin on ${esc(cap.drive)} keeps at most ${fmtTotal(cap.capacity)}, so moving more always pushes out older items, including clips you moved earlier. You can raise the limit in the Recycle Bin’s Properties.</span>`:'';
+  return `<div class="callout bad cf-perm">${ic('alert','lg')}<div class="ct"><b>${p===n?(n===1?'This clip can’t':'These clips can’t'):`${p} of these clips can’t`} be kept in the Recycle Bin</b>${why.length>1?`<ul>${why.map(w=>`<li>${w}</li>`).join('')}</ul>`:`<span>${why[0]||''}</span>`}${tip}</div></div>`;
+}
+const checkingNote=n=>`<div class="cf-note cf-checking"><span class="spin"></span><span>Checking that the Recycle Bin can keep ${n===1?'it':'them'}…</span></div>`;
+/* the Recycle Bin check is asked for before anything else, and OK waits for it: the dialog opens at once with OK disabled
+   ("Checking the Recycle Bin…"), and whenever the batch changes (Keep favourites) the count updates straight away and OK waits
+   again for the check of exactly that batch. A busy dialog is never refilled. On OK the checked batch must equal the batch being
+   sent; if it ever doesn't, it's checked again and the dialog shown again instead of acting.
+   text(cs, chk) builds the dialog; bind(recheck) lets the caller re-check. → {go: true|'alt', chk, list} or null (Cancel) */
+async function checkedConfirm(pick,text,bind){
+  const keyOf=cs=>cs.map(c=>c.id).sort().join(',');
+  let tok=0,chk={pending:true,key:'',ok:true,fits:true,bad:[],perm:[]};
+  const refresh=()=>{if($('#confirmLayer').hidden||$('#confirm').classList.contains('busy'))return;cfFill(Object.assign(text(pick(),chk),{keep:true}));};
+  const recheck=async()=>{
+    const my=++tok,list=pick(),key=keyOf(list);chk={pending:true,key,ok:true,fits:true,bad:[],perm:[]};refresh();
+    const c=await binCheck(list);if(my!==tok)return;c.key=key;chk=c;refresh();
+  };
+  if(bind)bind(recheck);
+  let p=confirmBox(Object.assign(text(pick(),chk),{keep:true}));recheck();
+  for(;;){
+    const v=await p;if(!v){tok++;return null;}
+    const list=pick();if(!chk.pending&&chk.key===keyOf(list))return {go:v,chk,list};
+    recheck();p=confirmBox(Object.assign(text(pick(),chk),{keep:true}));   // never act on a check of a different batch
+  }
+}
+
+/* one clip (right-click, Delete on a focused card, the editor's bin): the same Recycle Bin check and Undo as a batch */
+function oneText(c,chk){
+  const file=`<b>${esc(c.fileName)}</b> (${fmtMB(MBof(c.sizeBytes))})`;
+  if(chk.pending)return {title:'Move this clip to the Recycle Bin?',sub:clipLbl(c),ok:'Checking the Recycle Bin…',wait:true,
+    html:`<p>${file} goes to the Windows Recycle Bin. Exports you already made are kept.</p><div class="cf-notes">${checkingNote(1)}</div>`};
+  if(chk.perm.length)return {perm:true,icon:'alert',title:'Delete this clip permanently?',sub:clipLbl(c),ok:'Delete permanently',
+    html:`${binWarn(chk,1,1)}<p>${file} will be deleted straight away and can’t be restored. Exports you already made are kept.</p>`};
+  return {title:'Move this clip to the Recycle Bin?',sub:clipLbl(c),ok:'Move to Recycle Bin',
+    html:`<p>${file} goes to the Windows Recycle Bin${chk.ok?', so you can still restore it from there':''}. Exports you already made are kept.</p>${chk.ok?'':binWarn(chk,1,1)}`};
+}
 async function trashClip(c){
   if(!c)return;
-  const ok=await confirmBox({title:'Move this clip to the Recycle Bin?',sub:`${c.game} — ${whenLabel(new Date(c.recordedAt))}`,
-    html:`<b>${esc(c.fileName)}</b> (${fmtMB(MBof(c.sizeBytes))}) goes to the Windows Recycle Bin, so you can still restore it from there. Exports you already made are kept.`,ok:'Move to Recycle Bin'});
-  if(!ok)return;
+  const res=await checkedConfirm(()=>[c],(cs,chk)=>oneText(c,chk));if(!res)return;
+  const perm=res.chk.perm.length>0;
+  cfBusy(perm?'Deleting…':'Moving…');
   const wasOpen=ed.clip&&ed.clip.id===c.id;let next=null;
   if(wasOpen){const l=gameList(),i=l.indexOf(ed.clip);next=l[i+1]||l[i-1]||null;}
-  try{await BT.trashClip(c.id);}catch(e){fail("Couldn't move the clip to the Recycle Bin",e);return;}
+  try{
+    if(perm){const r=await BT.trashClips([c.id],{permanent:true});if(r.failed.length)throw r.failed[0].error;}
+    else await BT.trashClip(c.id);
+  }catch(e){closeConfirm(false,true);fail(perm?"Couldn't delete the clip":"Couldn't move the clip to the Recycle Bin",e);return;}
+  closeConfirm(true,true);
   setClips(S.clips.filter(x=>x.id!==c.id));   // drop it now; library-changed brings the authoritative list
-  toast(`Moved ${c.fileName} to the Recycle Bin`,'trash');
+  if(perm)toast(`Deleted ${c.fileName} permanently`,'trash');
+  else{const mv={ids:[c.id],after:new Set(sel.ids)};lastMove=mv;undoToast(`Moved ${c.fileName} to the Recycle Bin`,'trash',()=>restoreMoved(mv));}
   if(wasOpen){if(next&&S.byId[next.id])openClip(S.byId[next.id]);else{closeClip();go('library');}}
   else if(cur()==='library')renderLibrary(true);else renderSide();
+}
+
+/* ---------- the selection to the Recycle Bin: one confirm that shows what's in it (and whether it can come back), a busy
+   state, then a toast with Undo, or the list of clips that couldn't be moved (they stay selected, marked, for Try again). */
+function trashText(cs,st,total){
+  const n=cs.length,bytes=selBytes(cs),kept=total-n,chk=st.chk||{ok:true,fits:true,perm:[]};
+  const pset=new Set(chk.perm.map(c=>c.id)),p=cs.filter(c=>pset.has(c.id)).length,k=n-p;
+  const games=[...cs.reduce((m,c)=>{const g=m.get(c.gameId)||{id:c.gameId,name:c.game,n:0,b:0};g.n++;g.b+=c.sizeBytes;return m.set(c.gameId,g);},new Map()).values()].sort((a,b)=>b.n-a.n||b.b-a.b);
+  const favs=st.favN,shared=cs.filter(isShared).length,vs=new Set(viewClips().map(c=>c.id)),out=cs.filter(c=>!vs.has(c.id)).length;
+  const openEd=ed.clip&&cs.some(c=>c.id===ed.clip.id),everything=n===S.clips.length;
+  const row=g=>`<div class="cf-row">${gameIcon(S.G[g.id]||{name:g.name},'gi')}<span class="nm">${esc(g.name)}</span><em>${nClips(g.n)} · ${fmtTotal(g.b)}</em></div>`;
+  const rest=games.slice(4),restN=rest.reduce((s,g)=>s+g.n,0);
+  const list=games.length>1?`<div class="cf-list">${games.slice(0,rest.length?3:4).map(row).join('')}${rest.length?`<div class="cf-row more"><span class="nm">${games.length-3} more games</span><em>${nClips(restN+games[3].n)} · ${fmtTotal(rest.reduce((s,g)=>s+g.b,0)+games[3].b)}</em></div>`:''}</div>`:'';
+  const notes=[
+    chk.pending?checkingNote(n):'',
+    st.favN&&st.mixed?`<div class="cf-note fav">${ic('star-f','xs')}<span>${st.favN===1?'1 is a favourite':`${st.favN} are favourites`}</span><button class="cf-keep" id="cfKeepFav" role="checkbox" aria-checked="${st.keepFav}"><i class="cbx"></i>Keep ${st.favN===1?'it':'them'}</button></div>`
+      :favs?`<div class="cf-note fav">${ic('star-f','xs')}<span>${n===1?'It’s a favourite':`All ${n} are favourites`}</span></div>`:'',
+    shared&&n>1?`<div class="cf-note">${ic('chat','xs')}<span>${shared===n?`All ${n} were`:shared===1?'1 was':`${shared} were`} shared to Discord. ${shared===1?'Its':'Their'} exports are kept.</span></div>`:'',
+    openEd?`<div class="cf-note">${ic('scissors','xs')}<span>${n===1?'It’s the clip that’s open in the editor.':'Includes the clip that’s open in the editor.'}</span></div>`:'',
+    out?`<div class="cf-note warn">${ic('alert','xs')}<span>${out===n?(n===1?'It isn’t':'None of them are'):`${out} of them aren’t`} in the view you’re looking at.</span><button class="cf-link" data-cfreview>Review</button></div>`:'',
+    chk.ok?'':binWarn(chk,n,p),
+  ].join('');
+  const nb=notes?`<div class="cf-notes">${notes}</div>`:'',c=cs[0],exp=shared?'':' Exports you already made are kept.';
+  const sub=everything?`Every clip in your library · ${fmtTotal(bytes)}`:`${fmtTotal(bytes)} · ${games.length===1?games[0].name:games.length+' games'}${kept?` · ${kept} favourite${kept===1?'':'s'} kept`:''}`;
+  if(chk.pending){   // the count is already right; OK waits for the check of this exact batch, and nothing is promised yet
+    if(n===1)return {title:'Move this clip to the Recycle Bin?',sub:clipLbl(c),ok:'Checking the Recycle Bin…',wait:true,
+      html:`<p><b>${esc(c.fileName)}</b> (${fmtMB(MBof(c.sizeBytes))}) goes to the Windows Recycle Bin. Exports you already made are kept.</p>${nb}`};
+    return {title:everything?`Move all ${n} clips to the Recycle Bin?`:`Move ${n} clips to the Recycle Bin?`,sub,ok:'Checking the Recycle Bin…',wait:true,
+      html:`<p>They go to the Windows Recycle Bin.${exp}</p>${list}${nb}`};
+  }
+  if(p&&p===n){   // the Recycle Bin can't keep any of them: say it plainly, and the button says what it really does
+    if(n===1)return {perm:true,icon:'alert',title:'Delete this clip permanently?',sub:clipLbl(c),ok:'Delete permanently',
+      html:`${binWarn(chk,1,1)}<p><b>${esc(c.fileName)}</b> (${fmtMB(MBof(c.sizeBytes))}) will be deleted straight away and can’t be restored. Exports you already made are kept.</p>${nb}`};
+    return {perm:true,icon:'alert',title:`Delete ${everything?'all ':''}${n} clips permanently?`,sub,ok:`Delete ${n} clips permanently`,
+      html:`${binWarn(chk,n,p)}<p>They’ll be deleted straight away and can’t be restored.${exp} Windows frees the ${fmtTotal(bytes)} right away.</p>${list}${nb}`};
+  }
+  if(p){   // mixed: move what can be kept; for the rest, delete permanently (OK) or skip them and leave them selected (the middle button)
+    const dv=esc(chk.bad.map(d=>d.drive).join(', ')),pg=esc([...new Set(cs.filter(c=>pset.has(c.id)).map(c=>c.game))].join(', '));
+    return {perm:true,icon:'alert',title:`Move ${nClips(k)} to the Recycle Bin and delete ${p} permanently?`,sub,ok:`Move ${k}, delete ${p} permanently`,alt:`Move ${k}, skip ${dv}`,
+      html:`${binWarn(chk,n,p)}<p>The other ${k===1?'clip goes':`${k} go`} to the Windows Recycle Bin, so you can still restore ${k===1?'it':'them'}. The ${p===1?'one':p} on ${dv} (${pg}) ${p===1?'is':'are'} deleted straight away, or choose <b class="cf-em">Move ${k}, skip ${dv}</b> to leave ${p===1?'it':'them'} where ${p===1?'it is':'they are'}, still selected.${exp}</p>${list}${nb}`};
+  }
+  const back=chk.ok?(n===1?', so you can still restore it from there':', so you can still restore them from there'):'';
+  if(n===1)return {title:'Move this clip to the Recycle Bin?',sub:clipLbl(c),ok:'Move to Recycle Bin',
+    html:`<p><b>${esc(c.fileName)}</b> (${fmtMB(MBof(c.sizeBytes))}) goes to the Windows Recycle Bin${back}. Exports you already made are kept.</p>${nb}`};
+  return {title:everything?`Move all ${n} clips to the Recycle Bin?`:`Move ${n} clips to the Recycle Bin?`,sub,ok:`Move ${n} clips to the Recycle Bin`,
+    html:`<p>They go to the Windows Recycle Bin${back}.${exp} Windows frees the ${fmtTotal(bytes)} when the Recycle Bin is emptied.</p>${list}${nb}`};
+}
+const doneMsg=(mv,dl,file)=>mv&&dl?`Moved ${nClips(mv)} to the Recycle Bin, deleted ${dl} permanently`:dl?(file&&dl===1?`Deleted ${file} permanently`:`Deleted ${nClips(dl)} permanently`):(file&&mv===1?`Moved ${file} to the Recycle Bin`:`Moved ${nClips(mv)} to the Recycle Bin`);
+async function trashSelected(){
+  const all=selClips();if(!all.length)return;
+  closePop();
+  // "Keep favourites" starts on when a favourite came in with a bulk pick (Select all, a group, Ctrl+A, a range), off when you ticked each one
+  const favs=all.filter(c=>c.fav),favN=favs.length,mixed=favN>0&&favN<all.length;
+  const st={favN,mixed,keepFav:mixed&&favs.some(c=>sel.bulk.has(c.id))};
+  const pick=()=>st.keepFav?all.filter(c=>!c.fav):all;
+  // DOM order before anything moves, to put keyboard focus on the card that takes the first removed one's place
+  const order=$$('#libScroll .card[data-clip]').map(x=>x.dataset.clip);
+  let recheck=null;
+  const onKeep=e=>{const b=e.target.closest('#cfKeepFav');if(!b||b.disabled)return;st.keepFav=!st.keepFav;recheck();$('#cfKeepFav').focus();};   // count now, OK after the check
+  $('#cfText').addEventListener('click',onKeep);
+  let res;try{res=await checkedConfirm(pick,(cs,chk)=>trashText(cs,Object.assign({},st,{chk}),all.length),rc=>recheck=rc);}
+  finally{$('#cfText').removeEventListener('click',onKeep);}
+  if(!res)return;
+  const skip=res.go==='alt',permIds=new Set(res.chk.perm.map(c=>c.id)),skipped=skip?res.list.filter(c=>permIds.has(c.id)):[];
+  let list=skip?res.list.filter(c=>!permIds.has(c.id)):res.list,first=true;
+  const keptFav=all.length-res.list.length,moved=[],deleted=[];
+  const mv={ids:moved,reselect:true,after:new Set()},file=all.length===1?all[0].fileName:null;
+  const run=async(cs,perm)=>{if(!cs.length)return {trashed:[],failed:[]};
+    try{return await BT.trashClips(cs.map(c=>c.id),perm?{permanent:true}:null);}catch(e){return {rejected:errMsg(e),trashed:[],failed:cs.map(c=>({clipId:c.id,error:errMsg(e)}))};}};
+  for(;;){
+    const rec=list.filter(c=>!permIds.has(c.id)),del=list.filter(c=>permIds.has(c.id));
+    cfBusy(del.length?(rec.length?`Moving ${rec.length}, deleting ${del.length}…`:`Deleting ${nClips(del.length)}…`):`Moving ${nClips(rec.length)}…`);
+    const a=await run(rec,false),b=await run(del,true);
+    if((a.rejected||!rec.length)&&(b.rejected||!del.length)){   // nothing could be attempted: the selection stays as it was
+      const why=a.rejected||b.rejected;BT.log('error',`trash_clips failed: ${why}`);
+      const again=await confirmBox({title:del.length&&!rec.length?(list.length===1?'Couldn’t delete the clip':'Couldn’t delete the clips'):(list.length===1?'Couldn’t move the clip to the Recycle Bin':'Couldn’t move the clips to the Recycle Bin'),
+        sub:'Nothing was moved. Your selection is unchanged.',icon:'alert',tone:'warn',
+        html:`<div class="callout bad">${ic('alert','lg')}<div class="ct"><b>What went wrong</b><span class="err-msg">${esc(why)}</span></div></div>`,ok:'Try again',okCls:'',no:'Close',keep:true});
+      if(!again)return;continue;
+    }
+    moved.push(...a.trashed);deleted.push(...b.trashed);
+    const gone=new Set([...a.trashed,...b.trashed]),fails=[...a.failed,...b.failed];
+    // what was attempted (and the favourites you kept) leaves the selection; what failed or was skipped stays in it, marked
+    for(const c of first?all:list){sel.ids.delete(c.id);sel.bulk.delete(c.id);}
+    sel.failed.clear();for(const f of fails)if(S.byId[f.clipId]&&!gone.has(f.clipId)){sel.ids.add(f.clipId);sel.failed.set(f.clipId,f.error||'Unknown error');}
+    for(const c of skipped)if(S.byId[c.id]){sel.ids.add(c.id);sel.failed.set(c.id,`Skipped: drive ${res.chk.bad.map(d=>d.drive).join(', ')} can’t keep it in the Recycle Bin`);}
+    first=false;sel.anchor=null;favLast=null;
+    if(ed.clip&&gone.has(ed.clip.id))closeClip();
+    setClips(S.clips.filter(c=>!gone.has(c.id)));   // drop them now; library-changed brings the authoritative list
+    lastMove=moved.length?mv:null;lib.emptied=S.clips.length?null:{moved:moved.length,deleted:deleted.length};
+    mv.after=new Set(sel.ids);   // Undo selects them again only if you haven't started something else since
+    if(cur()==='library')renderLibrary(true);else{renderSide();syncSel();}
+    const failed=fails.map(f=>({c:S.byId[f.clipId],why:f.error||'Unknown error'})).filter(f=>f.c);
+    const tell=extra=>{const m=doneMsg(moved.length,deleted.length,file)+(extra||'');if(moved.length)undoToast(m,'trash',()=>restoreMoved(mv),deleted.length?'Undo move':'Undo');else toast(m,'trash');};
+    const skipMsg=skipped.length?` · skipped ${skipped.length} on ${res.chk.bad.map(d=>d.drive).join(', ')}`:'';
+    if(!failed.length){
+      closeConfirm(true,true);
+      tell((keptFav?` · kept ${keptFav} favourite${keptFav===1?'':'s'}`:'')+skipMsg);
+      if(document.activeElement===document.body||!shown(document.activeElement)){   // focus lands on the next clip, never on <body>
+        const i=order.findIndex(id=>gone.has(id));focusLib([...order.slice(i),...order.slice(0,i).reverse()].find(id=>S.byId[id]));
+      }
+      return;
+    }
+    const done=moved.length+deleted.length,verb=deleted.length&&!moved.length?'Deleted':'Moved';
+    const rows=failed.map(f=>`<div class="cf-fail"><div class="mt">${thumbHTML(f.c.thumb)}</div><div><b>${esc(clipLbl(f.c))}</b><span>${esc(f.why)}</span></div></div>`).join('');
+    const again=await confirmBox({icon:'alert',tone:'warn',okCls:'',ok:'Try again',no:'Done',keep:true,
+      title:done?`${verb} ${done} of ${done+failed.length} clips${verb==='Moved'?' to the Recycle Bin':''}`:failed.length===1?'Couldn’t move this clip':`Couldn’t move ${failed.length} clips`,
+      sub:done?`${nClips(failed.length)} couldn’t be ${verb==='Moved'?'moved':'deleted'}`:'Nothing was moved',
+      html:`<div class="cf-fails">${rows}</div><p class="cf-hint">${failed.length===1?'It stays':'They stay'} selected in the library, so you can try again once nothing is using ${failed.length===1?'it':'them'}.</p>`});
+    if(!again){   // Done: Undo for what did move; focus and scroll to the first clip that didn't
+      if(done)tell(` · ${failed.length} couldn’t be`+(verb==='Moved'?' moved':' deleted')+skipMsg);
+      const f0=failed.map(f=>f.c.id).find(id=>$(`#libScroll .card[data-clip="${CSS.escape(id)}"]`));
+      if(f0){const el=$(`#libScroll .card[data-clip="${CSS.escape(f0)}"]`);el.focus({preventScroll:true});el.scrollIntoView({block:'center'});}else $('#selDel').focus();
+      return;
+    }
+    list=failed.map(f=>f.c).filter(c=>S.byId[c.id]);if(!list.length){closeConfirm(true,true);return;}
+  }
+}
+/* Undo: restore_clips puts them back (same ids, favourites, edits, exports). A batch comes back selected, as it was, unless
+   you've started a different selection since: then they come back unselected and the toast says your selection is kept. */
+async function restoreMoved(mv){
+  if(!mv||mv.busy||!mv.ids.length)return;mv.busy=true;
+  toast(`Restoring ${mv.ids.length===1?'the clip':nClips(mv.ids.length)}…`,'clock');
+  const same=!!mv.after&&sel.ids.size===mv.after.size&&[...sel.ids].every(id=>mv.after.has(id)),again=mv.reselect&&same;
+  try{
+    const r=await BT.restoreClips(mv.ids);
+    if(again){r.restored.forEach(id=>sel.pending.add(id));clearTimeout(sel.pendingT);sel.pendingT=setTimeout(()=>sel.pending.clear(),15000);}
+    if(lastMove===mv)lastMove=null;lib.emptied=null;
+    const n=r.restored.length,how=!mv.reselect||!n?'':again?' · selected again':' · your current selection is unchanged';
+    if(r.failed.length)toast(n?`Restored ${n} of ${mv.ids.length} clips · ${r.failed[0].error}`:`Couldn’t restore ${mv.ids.length===1?'the clip':'the clips'} · ${r.failed[0].error}`,'alert');
+    else toast((mv.ids.length===1?'Restored the clip':`Restored ${nClips(n)}`)+how,'undo');
+  }catch(e){fail("Couldn't restore the clips",e);}
+  finally{mv.busy=false;}
 }
 
 /* ================================================================== EDITOR */
@@ -1608,13 +2077,14 @@ function route(){
     if(S.clips.length)openClip(S.clips[0]);   // #editor without a selected clip opens the newest
     else{location.replace('#library');return;}
   }
-  const screen=r.startsWith('export')?'editor':r;
+  const screen=r.startsWith('export')?'editor':r,from=lastMain;
   if(screen!=='settings'){lastMain=screen;cancelHk();}
   if(screen!=='editor')pause();
   $$('.screen').forEach(s=>s.hidden=s.dataset.screen!==screen);
   $('#tbSettings').classList.toggle('on',screen==='settings');
   closePop();
-  if(screen==='library')renderLibrary();
+  if(screen==='library'){renderLibrary();   // back from the editor: keyboard focus returns to the clip you opened
+    const fc=from==='editor'&&ed.clip&&$(`#libScroll .card[data-clip="${CSS.escape(ed.clip.id)}"]`);if(fc&&(document.activeElement===document.body||!document.activeElement))fc.focus({preventScroll:true});}
   if(screen==='settings'){renderSettings();if(deep)scrollSettingsTo(deep,false);loadDevices();}
   if(screen==='editor')nextFrame(()=>{renderTimeline();positionCrop();fitInspector();});
   if(r==='export'){
@@ -1641,13 +2111,37 @@ function route(){
 window.addEventListener('hashchange',route);
 document.addEventListener('keydown',e=>{
   if(hkKey(e))return;   // Settings → Hotkeys is listening for a new combo
-  if(!$('#confirmLayer').hidden){if(e.key==='Escape'){e.preventDefault();closeConfirm(false);}return;}   // Enter/Space act on the focused button
+  if(!$('#confirmLayer').hidden){if(e.key==='Escape'){e.preventDefault();closeConfirm(false);}else if(e.key==='Tab')cfTrap(e);
+    else if(e.key==='Enter'&&e.target.closest&&e.target.closest('[role="checkbox"]'))e.preventDefault();   // a checkbox toggles on Space or a click, never Enter
+    return;}   // Enter/Space act on the focused button
   const r=cur(),tag=(e.target.tagName||'').toLowerCase(),typing=(tag==='input'&&e.target.type!=='range'&&e.target.type!=='checkbox')||tag==='textarea';
   if(e.key==='Escape'&&popEl){closePop();return;}
   if(r==='library'){
+    const card=!typing&&e.target.closest?e.target.closest('#libScroll .card'):null,id=card&&card.dataset.clip;
+    if(e.key!=='Shift'&&!(e.shiftKey&&/^(Arrow\w+|Home|End)$/.test(e.key)))sel.base=null;   // any other key ends a Shift+arrow run
     if((e.ctrlKey&&e.key.toLowerCase()==='k')||(e.key==='/'&&!typing)){e.preventDefault();$('#search').focus();$('#search').select();}
     else if(e.key==='Escape'&&typing){e.target.blur();}
-    else if(e.key==='Enter'&&!typing){const c=e.target.closest&&e.target.closest('.card[data-clip],.card[data-more]');if(c){e.preventDefault();c.click();}}
+    else if(e.key==='Escape'&&lib.filter==='sel'){e.preventDefault();leaveReview();}   // Review: Esc goes back, the selection stays
+    else if(e.key==='Escape'&&selOn()){e.preventDefault();const back=$('#selBar').contains(document.activeElement)&&sel.anchor;clearSel();
+      const el=back&&$(`#libScroll .card[data-clip="${CSS.escape(back)}"]`);if(el)el.focus();}
+    else if(typing||e.altKey)return;
+    else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='z'&&libUndo){e.preventDefault();runUndo();}
+    else if((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='a'){e.preventDefault();selectView(true);}
+    else if(e.key==='Delete'){if(selOn()){e.preventDefault();trashSelected();}else if(id){e.preventDefault();trashClip(S.byId[id]);}}
+    else if(e.key===' '&&id){e.preventDefault();
+      if(e.shiftKey&&sel.anchor){const rr=rangeIds(sel.anchor,id);if(rr){sel.ranged=true;setSel(rr,true,true);return;}}
+      selClick(id);}
+    else if(card&&!e.ctrlKey&&!e.metaKey&&/^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(e.key)){
+      e.preventDefault();const t=cardNav(card,e.key);if(!t)return;
+      if(e.shiftKey&&id&&t.dataset.clip){   // Shift+arrows: the selection as it was, plus anchor → focus (moving back shrinks it)
+        if(!sel.base){sel.base=new Set(sel.ids);if(!sel.anchor||!rangeIds(sel.anchor,id))sel.anchor=id;}
+        const rr=rangeIds(sel.anchor,t.dataset.clip)||[t.dataset.clip];rr.forEach(x=>{if(!sel.base.has(x))sel.bulk.add(x);});
+        sel.ids=new Set([...sel.base,...rr]);sel.ranged=true;syncSel();
+      }
+      t.focus({preventScroll:true});t.scrollIntoView({block:'nearest'});
+    }
+    // Enter opens, in both modes (Space is the toggle, as in Explorer); on a "+N more" tile it opens the game
+    else if(e.key==='Enter'&&card&&(e.target===card||e.target.tagName!=='BUTTON')){e.preventDefault();if(id){openClip(S.byId[id]);go('editor');}else card.click();}
     return;}
   if(r==='export'||r==='export-done'){
     // keys never fall through to the editor: Space/Enter only act on a focused control inside the dialog

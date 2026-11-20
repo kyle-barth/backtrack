@@ -54,6 +54,8 @@ const BT = {
   saveSettings:     settings                => call('save_settings', { settings }),
   listClips:        ()                      => call('list_clips'),
   setFavourite:     (clipId, fav)           => call('set_favourite', { clipId, fav }),
+  /** bulk set_favourite, one write */
+  setFavourites:    (clipIds, fav)          => call('set_favourites', { clipIds, fav }),
   saveEdits:        (clipId, edits)         => call('save_edits', { clipId, edits }),
   getWaveform:      (clipId, track, points) => call('get_waveform', { clipId, track, points }),
   getKeyframes:     clipId                  => call('get_keyframes', { clipId }),
@@ -66,6 +68,13 @@ const BT = {
   openPath:         path                    => call('open_path', { path }),
   openDiscord:      ()                      => call('open_discord'),
   trashClip:        clipId                  => call('trash_clip', { clipId }),
+  /** can the Recycle Bin keep this batch? → { fits, drives: [{ drive, bytes, capacity|null, permanent }] } (no file changes) */
+  trashCheck:       clipIds                 => call('trash_check', { clipIds }),
+  /** many clips to the Recycle Bin, one at a time → { trashed: [clipId], failed: [{ clipId, error }] }; rejects only if nothing
+      could be attempted. { permanent: true } deletes them outright: only when the user chose that in the confirm. */
+  trashClips:       (clipIds, o)            => call('trash_clips', o && o.permanent ? { clipIds, permanent: true } : { clipIds }),
+  /** Undo: clips this run moved to the Recycle Bin go back (same ids) → { restored: [clipId], failed: [{ clipId, error }] } */
+  restoreClips:     clipIds                 => call('restore_clips', { clipIds }),
 
   /* ---------------------------------------------------------------- phase 2: the recorder */
   recorderStatus:   ()                      => call('recorder_status'),

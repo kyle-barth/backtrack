@@ -103,6 +103,13 @@ struct Store {
     clips: HashMap<String, UserEntry>,
 }
 
+/// What `Library::forget` dropped for a clip (see `remember`).
+pub struct Forgotten {
+    key: String,
+    probe: Option<Probe>,
+    entry: Option<UserEntry>,
+}
+
 pub struct Library {
     index: Mutex<HashMap<String, Probe>>,
     store: Mutex<Store>,
@@ -361,16 +368,52 @@ impl Library {
         })
     }
 
-    pub fn forget(&self, id: &str) {
+    /// Favourite (or not) several clips with one write.
+    pub fn set_favs(&self, ids: &[String], fav: bool) -> Result<(), String> {
+        let keys: Vec<String> = {
+            let clips = self.clips.lock().unwrap();
+            clips.iter().filter(|c| ids.contains(&c.id)).map(|c| util::path_key(Path::new(&c.path))).collect()
+        };
+        if keys.is_empty() {
+            return Err("Those clips are no longer in the library.".into());
+        }
+        let mut store = self.store.lock().unwrap();
+        for k in keys {
+            store.clips.entry(k).or_default().fav = fav;
+        }
+        self.save_store(&store);
+        drop(store);
+        for c in self.clips.lock().unwrap().iter_mut().filter(|c| ids.contains(&c.id)) {
+            c.fav = fav;
+        }
+        Ok(())
+    }
+
+    /// Drop a clip whose file is gone. Returns what was dropped, so `remember` can put it back
+    /// if the file comes back from the Recycle Bin (Undo).
+    pub fn forget(&self, id: &str) -> Option<Forgotten> {
         let mut clips = self.clips.lock().unwrap();
-        if let Some(pos) = clips.iter().position(|c| c.id == id) {
-            let clip = clips.remove(pos);
-            let key = util::path_key(Path::new(&clip.path));
-            self.index.lock().unwrap().remove(&key);
+        let pos = clips.iter().position(|c| c.id == id)?;
+        let clip = clips.remove(pos);
+        let key = util::path_key(Path::new(&clip.path));
+        let probe = self.index.lock().unwrap().remove(&key);
+        let mut store = self.store.lock().unwrap();
+        let entry = store.clips.remove(&key);
+        if entry.is_some() {
+            self.save_store(&store);
+        }
+        Some(Forgotten { key, probe, entry })
+    }
+
+    /// Restore a forgotten clip's favourite, edits, export history and probe cache. The next scan lists it again.
+    pub fn remember(&self, f: Forgotten) {
+        if let Some(p) = f.probe {
+            self.index.lock().unwrap().insert(f.key.clone(), p);
+        }
+        if let Some(e) = f.entry {
             let mut store = self.store.lock().unwrap();
-            if store.clips.remove(&key).is_some() {
-                self.save_store(&store);
-            }
+            store.clips.insert(f.key, e);
+            self.save_store(&store);
         }
     }
 }

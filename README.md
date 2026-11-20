@@ -12,6 +12,7 @@ Everything runs on your PC. There's no account, no cloud and no telemetry.
 - **Three audio tracks, like GG.** You get game audio, voice chat (Discord) and your mic, each on its own track, so you can turn any of them down or off later.
 - **A simple trim editor.** It has a waveform for each track, markers and smooth timeline scrubbing.
 - **Discord-ready export.** It picks the best resolution and frame rate that fits 10 MB (or Nitro's 50 / 500 MB, or any size you like) and copies the file to your clipboard.
+- **Clean up in bulk.** Select clips with a click on their corner, Ctrl/Shift+click or a game's **Select all**, then move them all to the Recycle Bin at once, with Undo. It checks first that the Recycle Bin can actually keep them.
 - **Works with your GG clips.** Point it at your SteelSeries Moments folder and it picks up game names, trims and the separate audio tracks.
 - **Hotkeys, a tray icon and a small "clip saved" pop-up.** It can also start with Windows.
 

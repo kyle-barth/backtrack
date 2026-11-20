@@ -20,7 +20,7 @@ use media::PreparedTrack;
 use notify::{RecursiveMode, Watcher};
 use serde::Serialize;
 use settings::Settings;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::{mpsc, Arc, Mutex};
@@ -41,6 +41,8 @@ struct AppState {
     hotkey_map: Mutex<Vec<(u32, &'static str)>>,
     tray_toggle: Mutex<Option<tauri::menu::CheckMenuItem<tauri::Wry>>>,
     told_tray: std::sync::atomic::AtomicBool,
+    /// Clips this run moved to the Recycle Bin: id → (original path, what the library dropped), for Undo.
+    binned: Mutex<HashMap<String, (String, library::Forgotten)>>,
 }
 
 type St<'a> = State<'a, Arc<AppState>>;
@@ -68,6 +70,13 @@ impl AppState {
 
     fn clip(&self, id: &str) -> Result<Clip, String> {
         self.lib.get(id).ok_or_else(|| "That clip is no longer in the library.".to_string())
+    }
+
+    /// A clip went to the Recycle Bin: drop it from the library, but remember it so Undo can bring it back.
+    fn binned(&self, id: &str, path: &str) {
+        if let Some(f) = self.lib.forget(id) {
+            self.binned.lock().unwrap().insert(id.to_string(), (path.to_string(), f));
+        }
     }
 }
 
@@ -351,10 +360,160 @@ fn open_discord() -> Result<(), String> {
 fn trash_clip(app: AppHandle, state: St, clip_id: String) -> Result<(), String> {
     let clip = state.clip(&clip_id)?;
     sys::trash(&clip.path)?;
-    state.lib.forget(&clip_id);
+    state.binned(&clip_id, &clip.path);
     util::log("info", &format!("moved to Recycle Bin: {}", clip.path));
     let _ = app.emit("library-changed", ());
     Ok(())
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct TrashFailure {
+    clip_id: String,
+    error: String,
+}
+
+#[derive(Serialize)]
+struct TrashResult {
+    trashed: Vec<String>,
+    failed: Vec<TrashFailure>,
+}
+
+/// Move several clips to the Recycle Bin, or with `permanent` delete them outright (only when the user chose that).
+/// Per-clip failures are reported, not thrown.
+#[tauri::command]
+async fn trash_clips(app: AppHandle, state: St<'_>, clip_ids: Vec<String>, permanent: Option<bool>) -> Result<TrashResult, String> {
+    if clip_ids.is_empty() {
+        return Err("No clips were selected.".into());
+    }
+    let permanent = permanent.unwrap_or(false);
+    let st = state.inner().clone();
+    let res = blocking(move || {
+        let mut out = TrashResult { trashed: Vec::new(), failed: Vec::new() };
+        let mut found = Vec::new();
+        for id in clip_ids {
+            match st.clip(&id) {
+                Ok(c) => found.push((id, c.path)),
+                Err(error) => out.failed.push(TrashFailure { clip_id: id, error }),
+            }
+        }
+        let paths: Vec<String> = found.iter().map(|(_, p)| p.clone()).collect();
+        let results = if permanent { sys::delete_all(&paths) } else { sys::trash_all(&paths) };
+        let what = if permanent { "deleted" } else { "moved to Recycle Bin" };
+        for ((id, path), r) in found.into_iter().zip(results) {
+            match r {
+                Ok(()) => {
+                    if permanent {
+                        st.lib.forget(&id);
+                    } else {
+                        st.binned(&id, &path);
+                    }
+                    util::log("info", &format!("{what}: {path}"));
+                    out.trashed.push(id);
+                }
+                Err(error) => {
+                    util::log("warn", &format!("not {what}: {path}: {error}"));
+                    out.failed.push(TrashFailure { clip_id: id, error });
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await?;
+    let _ = app.emit("library-changed", ());
+    Ok(res)
+}
+
+#[derive(Serialize)]
+struct RestoreResult {
+    restored: Vec<String>,
+    failed: Vec<TrashFailure>,
+}
+
+/// Undo: put clips this run moved to the Recycle Bin back where they were, with their favourite, edits and exports.
+#[tauri::command]
+async fn restore_clips(app: AppHandle, state: St<'_>, clip_ids: Vec<String>) -> Result<RestoreResult, String> {
+    let st = state.inner().clone();
+    let res = blocking(move || {
+        let mut out = RestoreResult { restored: Vec::new(), failed: Vec::new() };
+        let mut known = Vec::new();
+        {
+            let binned = st.binned.lock().unwrap();
+            for id in clip_ids {
+                match binned.get(&id) {
+                    Some((path, _)) => known.push((id, path.clone())),
+                    None => out.failed.push(TrashFailure { clip_id: id, error: "Backtrack didn't move this clip to the Recycle Bin".into() }),
+                }
+            }
+        }
+        let paths: Vec<String> = known.iter().map(|(_, p)| p.clone()).collect();
+        for ((id, path), r) in known.into_iter().zip(sys::restore_all(&paths)?) {
+            match r {
+                Ok(()) => {
+                    if let Some((_, f)) = st.binned.lock().unwrap().remove(&id) {
+                        st.lib.remember(f);
+                    }
+                    util::log("info", &format!("restored from Recycle Bin: {path}"));
+                    out.restored.push(id);
+                }
+                Err(error) => {
+                    util::log("warn", &format!("couldn't restore {path}: {error}"));
+                    out.failed.push(TrashFailure { clip_id: id, error });
+                }
+            }
+        }
+        Ok(out)
+    })
+    .await?;
+    let _ = app.emit("library-changed", ());
+    Ok(res)
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct DriveCheck {
+    drive: String,
+    bytes: u64,
+    capacity: Option<u64>,
+    permanent: bool,
+    /// The clips (of those asked about) that are on this drive.
+    clip_ids: Vec<String>,
+}
+
+#[derive(Serialize)]
+struct TrashCheck {
+    fits: bool,
+    drives: Vec<DriveCheck>,
+}
+
+/// Before a delete: can the Recycle Bin of each drive hold these clips? If a batch is bigger than a drive's
+/// Recycle Bin, Windows makes room by permanently deleting the oldest items, which can be clips from the same batch.
+#[tauri::command]
+fn trash_check(state: St, clip_ids: Vec<String>) -> TrashCheck {
+    let mut drives: Vec<DriveCheck> = Vec::new();
+    for c in clip_ids.iter().filter_map(|id| state.lib.get(id)) {
+        let bin = sys::recycle_bin(&c.path);
+        match drives.iter_mut().find(|d| d.drive.eq_ignore_ascii_case(&bin.drive)) {
+            Some(d) => {
+                d.bytes += c.size_bytes;
+                d.clip_ids.push(c.id);
+            }
+            None => drives.push(DriveCheck {
+                drive: bin.drive,
+                bytes: c.size_bytes,
+                capacity: bin.capacity,
+                permanent: bin.permanent,
+                clip_ids: vec![c.id],
+            }),
+        }
+    }
+    let fits = drives.iter().all(|d| !d.permanent && d.capacity.map_or(true, |cap| d.bytes <= cap));
+    TrashCheck { fits, drives }
+}
+
+#[tauri::command]
+fn set_favourites(state: St, clip_ids: Vec<String>, fav: bool) -> Result<(), String> {
+    state.lib.set_favs(&clip_ids, fav)
 }
 
 #[tauri::command]
@@ -376,6 +535,7 @@ fn main() {
         hotkey_map: Mutex::new(Vec::new()),
         tray_toggle: Mutex::new(None),
         told_tray: std::sync::atomic::AtomicBool::new(false),
+        binned: Mutex::new(HashMap::new()),
     });
     match &*state.tools.lock().unwrap() {
         Some(t) => util::log("info", &format!("ffmpeg: {}", t.ffmpeg.display())),
@@ -475,6 +635,10 @@ fn main() {
             open_path,
             open_discord,
             trash_clip,
+            trash_clips,
+            trash_check,
+            restore_clips,
+            set_favourites,
             log,
             rec_app::recorder_status,
             rec_app::set_buffer,

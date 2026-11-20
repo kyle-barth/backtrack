@@ -18,6 +18,13 @@
      mock=fresh             the buffer starts empty (otherwise it has been running for 41 s)
      mock=hotkeyconflict    Alt+S is taken by another app (GG), so the save hotkey fails
    Several flags can be combined with commas: mock=slow,exportfail
+   Recycle Bin (multi-select delete):
+     trashfail=N            the first N clips sent to trash_clips fail ("open in another program"), so a
+                            partial failure and its Try again can be tested: index.html?trashfail=2#library
+     binfull=1              trash_check: the Recycle Bin on C: (the library's drive) holds only 2 GB, so bigger batches don't fit
+     nuke=1                 trash_check: C: deletes files straight away (no Recycle Bin)
+     mixed=1                PEAK's clips live on D:\Clips, a drive with no Recycle Bin (a mixed-drive batch)
+     checkms=N              trash_check takes N ms (default 40), e.g. checkms=1500 for a slow drive
    ===================================================================== */
 (function(){
 'use strict';
@@ -161,12 +168,15 @@ function planExport(req, clip){
 /* ------------------------------------------------------------------ the mock */
 function create(){
   const flags = parseFlags();
+  const qp = k => (location.search + '&' + location.hash.replace('#', '&')).match(new RegExp('[?&]' + k + '=(\\d+)'));
+  const mixedDrive = !!qp('mixed') || flags.has('mixed');   // ?mixed=1: PEAK lives on D:, which has no Recycle Bin
+  const checkMs = qp('checkms') ? +qp('checkms')[1] : 40;     // ?checkms=1500: a slow trash_check (a sleeping HDD, a network share)
   const listeners = {};
   const emit = (ev, payload) => (listeners[ev] || []).slice().forEach(fn => { try { fn(payload); } catch (e) { setTimeout(() => { throw e; }); } });
   const logs = [];
 
   const settings = {
-    clipDirs: flags.has('empty') ? [] : flags.has('missing') ? ['D:\\Old drive\\SteelSeries Moments'] : [MOMENTS],
+    clipDirs: flags.has('empty') ? [] : flags.has('missing') ? ['D:\\Old drive\\SteelSeries Moments'] : mixedDrive ? [MOMENTS, 'D:\\Clips'] : [MOMENTS],
     exportDir: EXPORTS,
     defaultPreset: 'd10',
     customMb: 25,
@@ -207,7 +217,7 @@ function create(){
     const g = G[gameId], tracks = g.tracks || T3;
     if (thumbKey && !thumbOK(thumbKey)) thumbKey = null;
     const fileName = `${slugTitle(g.name)}__${stamp(new Date(at))}.mp4`;
-    const path = `${MOMENTS}\\${g.folder}\\${fileName}`;
+    const path = mixedDrive && gameId === 'peak' ? `D:\\Clips\\${g.folder}\\${fileName}` : `${MOMENTS}\\${g.folder}\\${fileName}`;
     const id = hash(path).toString(16).padStart(8, '0') + hash(path + '#').toString(16).padStart(8, '0');
     const sizeBytes = Math.round(mb*1e6);
     const c = {
@@ -241,6 +251,11 @@ function create(){
   let firstList = true;
   const waveCache = new Map();
   let job = null, failedOnce = false;
+  let trashFails = +((location.search + '&' + location.hash).match(/trashfail=(\d+)/) || [0, 0])[1];
+  const bin = new Map();   // clips trash_clips / trash_clip moved to the Recycle Bin in this run (restore_clips)
+  const qf = k => new RegExp('[?&]' + k + '=1').test(location.search + '&' + location.hash.replace('#', '&')) || flags.has(k);
+  const binFull = qf('binfull'), binNuke = qf('nuke');   // ?binfull=1, ?nuke=1 (see the header)
+  const driveOf = p => { const m = String(p).match(/^[A-Za-z]:/); return m ? m[0].toUpperCase() : String(p).split('\\').slice(0, 4).join('\\'); };   // "C:" or "\\server\share"
   const usedNames = new Set(clips.flatMap(c => c.exports.map(e => lower(e.path))));
 
   function waveKind(name){ return /^game$/i.test(name) ? 'game' : /^mic$/i.test(name) ? 'mic' : 'voice'; }
@@ -386,6 +401,7 @@ function create(){
       return delay(wait).then(() => clone(visible()));
     },
     set_favourite({clipId, fav}){ need(clipId).fav = !!fav; },
+    set_favourites({clipIds, fav}){ (clipIds || []).forEach(need); clipIds.forEach(id => { byId(id).fav = !!fav; }); return delay(30); },
     save_edits({clipId, edits}){
       const c = need(clipId);
       if (!(edits && edits.outT > edits.inT)) throw 'Invalid edits: Out must be after In.';
@@ -465,8 +481,50 @@ function create(){
     open_path: ({path}) => { logs.push(['info', 'open_path ' + path]); return delay(30); },
     open_discord: () => { logs.push(['info', 'open_discord']); return delay(30); },
     trash_clip({clipId}){
-      const c = need(clipId); clips.splice(clips.indexOf(c), 1);
+      const c = need(clipId); clips.splice(clips.indexOf(c), 1); bin.set(c.id, c);
       setTimeout(() => emit('library-changed', null), 60);
+    },
+    // per drive: the batch's bytes, the Recycle Bin's size limit, and whether the drive deletes straight away (no file changes)
+    trash_check({clipIds}){
+      const per = new Map();
+      for (const id of clipIds || []){
+        const c = byId(id); if (!c) continue; const d = driveOf(c.path);
+        const e = per.get(d) || {bytes:0, clipIds:[]}; e.bytes += c.sizeBytes; e.clipIds.push(id); per.set(d, e);
+      }
+      const drives = [...per].map(([drive, e]) => ({drive, bytes:e.bytes, clipIds:e.clipIds,
+        capacity: drive === 'D:' ? null : drive === 'C:' && binFull ? 2e9 : 100e9,   // a 2 TB drive's Recycle Bin is about 100 GB; binfull: 2 GB
+        permanent: drive === 'D:' || (drive === 'C:' && binNuke)}));                  // mixed=1: D: has no Recycle Bin
+      return delay(checkMs, {fits: !drives.some(d => d.permanent || (d.capacity != null && d.bytes > d.capacity)), drives});
+    },
+    // one clip at a time (≈ 30 ms each here), reports what worked, emits library-changed once at the end
+    trash_clips({clipIds, permanent}){
+      if (!Array.isArray(clipIds) || !clipIds.length) return Promise.reject('No clips were given to move to the Recycle Bin.');
+      return delay(120 + 30*clipIds.length).then(() => {
+        const trashed = [], failed = [];
+        for (const id of clipIds){
+          const c = byId(id);
+          if (!c){ failed.push({clipId:id, error:'This clip is no longer in your library.'}); continue; }
+          if (trashFails > 0){ trashFails--; failed.push({clipId:id, error:'The file is open in another program. Close it and try again.'}); continue; }
+          clips.splice(clips.indexOf(c), 1); trashed.push(id);
+          if (!permanent) bin.set(c.id, c);   // restore_clips can bring it back
+        }
+        setTimeout(() => emit('library-changed', null), 60);
+        return {trashed, failed};
+      });
+    },
+    // Undo: clips this run moved to the Recycle Bin go back with the same id, favourite, edits and exports
+    restore_clips({clipIds}){
+      return delay(80 + 4*(clipIds || []).length).then(() => {
+        const restored = [], failed = [];
+        for (const id of clipIds || []){
+          const c = bin.get(id);
+          if (!c){ failed.push({clipId:id, error:'It’s no longer in the Recycle Bin.'}); continue; }
+          if (clips.some(x => lower(x.path) === lower(c.path))){ failed.push({clipId:id, error:'A file with the same name is already in that folder.'}); continue; }
+          bin.delete(id); clips.push(c); restored.push(id);
+        }
+        setTimeout(() => emit('library-changed', null), 60);
+        return {restored, failed};
+      });
     },
     log({level, msg}){ logs.push([level, msg]); if (console.debug) console.debug('[backtrack:' + level + ']', msg); },
   };

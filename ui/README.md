@@ -30,6 +30,7 @@ Every call returns a Promise. Failures reject with the backend's human-readable 
 | `getSettings()`, `saveSettings(settings)` | `get_settings`, `save_settings { settings }` |
 | `listClips()` | `list_clips` |
 | `setFavourite(clipId, fav)` | `set_favourite { clipId, fav }` |
+| `setFavourites(clipIds, fav)` | `set_favourites { clipIds, fav }` (bulk, one write) |
 | `saveEdits(clipId, {inT,outT,markers})` | `save_edits { clipId, edits }` (the UI debounces it by 400 ms) |
 | `getWaveform(clipId, track, points)` | `get_waveform { clipId, track, points }` |
 | `getKeyframes(clipId)` | `get_keyframes { clipId }` |
@@ -38,6 +39,9 @@ Every call returns a Promise. Failures reject with the backend's human-readable 
 | `saveTrimmedCopy(clipId, start, end)` | `save_trimmed_copy { clipId, start, end }` |
 | `copyFile(path)`, `reveal(path)`, `openPath(path)`, `openDiscord()` | `copy_file`, `reveal`, `open_path`, `open_discord` |
 | `trashClip(clipId)` | `trash_clip { clipId }` |
+| `trashCheck(clipIds)` → `{ fits, drives: [{ drive, bytes, capacity, permanent, clipIds }] }` | `trash_check { clipIds }` (no file changes: can each drive's Recycle Bin keep its part of the batch? `clipIds` = the requested clips on that drive) |
+| `trashClips(clipIds, { permanent })` → `{ trashed, failed: [{ clipId, error }] }` | `trash_clips { clipIds, permanent? }` (one clip at a time, one `library-changed` at the end; rejects only if nothing could be attempted; `permanent` only when the user chose "Delete permanently") |
+| `restoreClips(clipIds)` → `{ restored, failed }` | `restore_clips { clipIds }` (Undo: clips this run moved to the Recycle Bin go back with the same ids; one `library-changed`) |
 | `log(level, msg)` | `log { level, msg }` (never rejects) |
 | `recorderStatus()`, `setBuffer(enabled)` | `recorder_status`, `set_buffer { enabled }` |
 | `saveReplay(secs = null)` | `save_replay { secs }` → `{ path, game, duration }` |
@@ -66,6 +70,9 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
 - **Folders:** `list_clips` only returns clips under the current `clipDirs`, so removing the folder empties the library just as the real backend would. `trash_clip` and `save_settings` (when the folders change) emit `library-changed`.
 - **Flags:** put them in the query string or after `?` in the hash, e.g. `index.html#library?mock=empty`, comma-separated:
   `empty` (only the recorder's empty folder), `missing` (a folder with no clips), `noffmpeg`, `exportfail` (first export fails part-way, to test Retry), `slow` (first scan takes 6 s), `static`.
+  `trashfail=N` (its own parameter, e.g. `index.html?trashfail=2#library`): the first N clips sent to `trash_clips` fail with "The file is open in another program", to test the partial-failure dialog and Try again. `trash_clips` takes about 30 ms per clip so the busy state shows.
+  `binfull=1` and `nuke=1` (also their own parameters): `trash_check` reports the Recycle Bin on the clips' drive as holding only 2 GB (bigger batches don't fit), or that drive as deleting straight away. `restore_clips` puts back what `trash_clips` / `trash_clip` moved in this session.
+  `mixed=1` puts PEAK's clips on a D: drive with no Recycle Bin (a mixed-drive batch: "Move N, skip D:"), and `checkms=N` makes `trash_check` take N ms (e.g. `checkms=1500`, to see OK wait for the check).
   Recorder flags: `recorderoff`, `recorderstarting` (stays in "starting"), `recordererror` (NVENC chosen on an AMD PC), `fresh` (the buffer starts empty), `hotkeyconflict` (Alt+S is taken by another app).
 - **Recorder:** see Phase 2 below.
 
@@ -74,6 +81,7 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
 - **Library:** everything is derived from `list_clips`: games (grouped by `gameId`, most clips first), counts, sizes, storage, Favourites, and "Shared to Discord" (`exports.length > 0`). The hero is the newest clip: "Just saved" plus the New badge when it's under 30 minutes old, otherwise "Newest clip". The library re-fetches on `library-changed`. There's a loading state for the slow first scan, an empty state (no folder, or no clips found) with a button to Settings, and an "FFmpeg not found" banner.
   - **View all:** renders the whole game (all 155) in batches of 48 as you scroll; By date covers every clip, grouped by day and then by month.
   - **Clip actions:** favourite, Show in folder, and Move to Recycle Bin (a confirm dialog that names the file, with Cancel focused). They're in the editor and in a new right-click menu on library cards.
+  - **Multi-select:** select clips (hover check, Ctrl/Shift+click, right-click → Select, a group's Select all, Space, Ctrl+A) and move them to the Recycle Bin in one go (`trash_check` first: when the Recycle Bin can't keep them the confirm says "Delete permanently"), with Undo (`restore_clips`); or add them to Favourites (`set_favourites`, with Undo).
 - **Editor preview:** a muted `<video>` (`BT.src(clip.path)`). The playhead follows `video.currentTime` on each animation frame. Play/pause, seeking, frame step (1/fps), selection loop and speed all act on the video.
   - **Audio:** `prepare_audio` gives one `<audio>` per track, re-synced on play, pause, seek and rate change, and every 250 ms whenever it drifts more than 80 ms. Lane volume and mute set `audio.volume` (times the preview volume).
   - **Fallback:** if the video can't play, it falls back to a clock with the thumbnail and a "Preview unavailable · it still exports" note.
@@ -167,4 +175,4 @@ Contract: the "Phase 2: the recorder" section of `../API.md`. Everything below g
 ## Keyboard
 
 Editor: Space play/pause · I / O set In/Out · ← / → frame (Shift: 1 s) · Home / End jump to In/Out · L loop · M mark · Del/Backspace remove marker · Ctrl+Z / Ctrl+Y · + / − zoom · F full screen · E export · Shift+E options · Alt+← library · ? shortcuts.
-Library: Ctrl+K or / to search, Enter opens the focused card. Export dialog: Enter export, Esc close or cancel, Ctrl+Z/Y, Ctrl+C copies again on the done screen.
+Library: Ctrl+K or / to search, Enter opens the focused card (also while selecting; a double-click too), arrows move between cards, Ctrl+Z undoes a move to the Recycle Bin or a bulk favourite while its toast shows. Selecting: Space toggles the focused card, Shift+Space or Shift+arrows select a range, Ctrl+A selects everything in the view, Delete moves the selection (or the focused card) to the Recycle Bin, Esc clears the selection (in Review, Esc goes back first). Export dialog: Enter export, Esc close or cancel, Ctrl+Z/Y, Ctrl+C copies again on the done screen.

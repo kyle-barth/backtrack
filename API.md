@@ -99,6 +99,10 @@ type ExportProgress = { stage: "analyse" | "encode" | "copy" | "finish"; percent
 | `open_path` | `{ path }` | none | Opens a folder or file with the default app. |
 | `open_discord` | none | none | Opens the Discord app (falls back to discord.com in the browser). |
 | `trash_clip` | `{ clipId }` | none | Sends the clip to the Recycle Bin (the UI must confirm first). Emits `library-changed`. |
+| `trash_clips` | `{ clipIds: string[], permanent?: bool }` | `{ trashed: string[], failed: [{ clipId, error }] }` | Sends several clips to the Recycle Bin in one go (the UI must confirm first, after `trash_check`). With `permanent: true` it deletes the files outright instead; only when the user chose that. Per-clip failures are listed in `failed` with a short reason ("It's open in another program"), not thrown; it rejects only if `clipIds` is empty. Emits `library-changed` once. |
+| `trash_check` | `{ clipIds: string[] }` | `{ fits, drives: [{ drive, bytes, capacity, permanent, clipIds }] }` | Before a delete: per drive, which of the clips are on it (`clipIds`), their total `bytes`, that drive's Recycle Bin limit `capacity` in bytes (`null` if Windows doesn't say) and `permanent` if the drive has no Recycle Bin or is set to delete immediately. `fits` is false if any drive is `permanent` or `bytes > capacity`; Windows would then permanently delete some of the batch to make room. Changes nothing. |
+| `restore_clips` | `{ clipIds: string[] }` | `{ restored: string[], failed: [{ clipId, error }] }` | Undo: puts clips Backtrack moved to the Recycle Bin during this run back where they were, with their favourite, edits and export history. Fails per clip if it's no longer in the Recycle Bin or a file with that name is back in its folder. Emits `library-changed` once. |
+| `set_favourites` | `{ clipIds: string[], fav }` | none | Bulk `set_favourite`, one write. |
 | `log` | `{ level, msg }` | none | Writes frontend logs and errors to the app log (`%APPDATA%\Backtrack\backtrack.log`). |
 
 ## Events
