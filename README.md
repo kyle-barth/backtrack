@@ -1,5 +1,7 @@
 # Backtrack
 
+![Backtrack's clip library: the replay buffer panel, the newest clip with Trim & export and Quick send, and clips grouped by game](docs/screenshot.png)
+
 **A free, open-source alternative to SteelSeries GG Moments.** Backtrack records the last minute of your game in the background. Press **Alt+S** and that moment is saved as a clip. Trim it, press **E**, and a Discord-sized copy (under 10 MB, no Nitro needed) is on your clipboard, ready to paste.
 
 Everything runs on your PC. There's no account, no cloud and no telemetry.
