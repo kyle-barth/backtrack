@@ -14,3 +14,6 @@
 *.swp
 Thumbs.db
 desktop.ini
+
+# FFmpeg staged for the installer by tools/stage-ffmpeg.ps1
+/src-tauri/ffmpeg/

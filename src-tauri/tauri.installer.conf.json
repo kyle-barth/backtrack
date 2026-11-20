@@ -1,0 +1,28 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "publisher": "Backtrack",
+    "copyright": "Copyright (c) 2026 the Backtrack contributors. MIT License.",
+    "homepage": "https://github.com/kyle-barth/backtrack",
+    "category": "Video",
+    "shortDescription": "Replay buffer, clip editor and Discord exporter",
+    "longDescription": "A free, open-source alternative to SteelSeries GG Moments: an always-on replay buffer, a trim editor and exports sized for Discord. Includes FFmpeg.",
+    "icon": ["icons/icon.ico", "icons/icon.png"],
+    "resources": {
+      "ffmpeg/ffmpeg.exe": "ffmpeg/ffmpeg.exe",
+      "ffmpeg/ffprobe.exe": "ffmpeg/ffprobe.exe",
+      "ffmpeg/LICENSE.txt": "ffmpeg/LICENSE.txt",
+      "ffmpeg/README.txt": "ffmpeg/README.txt",
+      "ffmpeg/NOTICE.txt": "ffmpeg/NOTICE.txt"
+    },
+    "windows": {
+      "nsis": {
+        "installMode": "currentUser",
+        "installerIcon": "icons/icon.ico",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
+}

@@ -1,4 +1,5 @@
-# Builds Backtrack for Windows and publishes it on the Releases page.
+# Builds Backtrack for Windows and publishes it on the Releases page: an installer with FFmpeg
+# included (backtrack-vX.Y.Z-windows-x64-setup.exe), a portable zip, and SHA-256 checksums.
 #
 # Two ways to start it:
 #   - push a tag:  git tag v0.2.0 && git push origin v0.2.0
@@ -74,20 +75,35 @@ jobs:
         working-directory: src-tauri
         run: cargo test --release
 
-      - name: Build
+      # The installer ships FFmpeg so people don't have to install it. The script downloads the
+      # pinned build, checks its SHA-256 and that it has the encoders/filters Backtrack uses.
+      - name: Stage FFmpeg for the installer
+        run: ./tools/stage-ffmpeg.ps1
+
+      - name: Install the Tauri CLI
+        run: cargo install tauri-cli --version 2.12.6 --locked
+
+      # Builds src-tauri/target/release/backtrack.exe and the NSIS installer around it
+      - name: Build the app and installer
         working-directory: src-tauri
-        run: cargo build --release
+        run: cargo tauri build --config tauri.installer.conf.json
 
       - name: Package
         env:
           VERSION: ${{ steps.ver.outputs.version }}
         run: |
           $name = "backtrack-v$env:VERSION-windows-x64"
+          # portable zip: just the app (bring your own FFmpeg)
           New-Item -ItemType Directory -Force "dist/$name" | Out-Null
           Copy-Item src-tauri/target/release/backtrack.exe, README.md, LICENSE "dist/$name/"
           Compress-Archive -Path "dist/$name/*" -DestinationPath "dist/$name.zip"
-          $hash = (Get-FileHash "dist/$name.zip" -Algorithm SHA256).Hash.ToLower()
-          "$hash  $name.zip" | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          Remove-Item "dist/$name" -Recurse
+          # installer: FFmpeg included
+          $setup = Get-ChildItem src-tauri/target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'The NSIS installer was not built' }
+          Copy-Item $setup.FullName "dist/$name-setup.exe"
+          $sums = (Get-ChildItem dist -File) | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
+          $sums | Set-Content -Encoding ascii dist/SHA256SUMS.txt
           Get-ChildItem dist -File | Format-Table Name, Length
 
       - name: Commit the version bump and tag it
@@ -115,11 +131,13 @@ jobs:
           $notes = @"
           ## Install
 
-          1. Download **backtrack-v$env:VERSION-windows-x64.zip** below and unzip it anywhere.
-          2. Install FFmpeg once: ``winget install Gyan.FFmpeg.Essentials``
-          3. Run ``backtrack.exe``, then press **Alt+S** in a game to save the last 60 seconds.
+          Download **backtrack-v$env:VERSION-windows-x64-setup.exe** below and run it. FFmpeg is included, so there's nothing else to set up, and it installs just for you (no admin rights needed). Then press **Alt+S** in a game to save the last 60 seconds.
+
+          Prefer a portable copy? Unzip **backtrack-v$env:VERSION-windows-x64.zip** anywhere and install FFmpeg yourself: ``winget install Gyan.FFmpeg.Essentials``
 
           Needs Windows 11 (64-bit). The app isn't code-signed yet, so Windows SmartScreen may warn the first time: choose **More info**, then **Run anyway**.
+
+          The installer includes FFmpeg 9.0.2 (GPLv3). Its licence and links to the source are in the ``ffmpeg`` folder where Backtrack is installed.
 
           "@
           Set-Content -Path notes.md -Value $notes

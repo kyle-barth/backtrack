@@ -446,6 +446,16 @@ fn main() {
             if state.settings.lock().unwrap().recorder.enabled {
                 rec_app::start_recorder(&handle);
             }
+            // "Start with Windows": rewrite the Run entry with this exe's path on every launch. That way it
+            // follows the app when it moves (portable zip → installer), and comes back after an upgrade's
+            // uninstall step removed it.
+            if state.settings.lock().unwrap().recorder.start_with_windows {
+                std::thread::spawn(|| {
+                    if let Err(e) = winutil::set_start_with_windows(true) {
+                        util::log("warn", &format!("start with Windows: {e}"));
+                    }
+                });
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![

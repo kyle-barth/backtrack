@@ -34,12 +34,15 @@ Backtrack is a [Tauri v2](https://tauri.app) app: a Rust backend and a plain HTM
 | `src-tauri/src/winutil.rs` | Foreground-game detection, local time, the chime, start with Windows |
 | `ui/toast.html` | The corner pop-up shown in-game when a clip is saved |
 | `tools/cdp.ps1` | Drives a running build through WebView2's DevTools protocol, for testing |
+| `tools/stage-ffmpeg.ps1` | Puts the pinned, checksum-verified FFmpeg build that the installer ships into `src-tauri/ffmpeg/` |
+| `src-tauri/tauri.installer.conf.json` | Installer-only Tauri settings (NSIS, per-user, bundled FFmpeg), merged in by `--config` |
+| `src-tauri/installer-hooks.nsh` | Installer hooks: stop the app and its FFmpeg before files are replaced; clean up on uninstall |
 
 ## Requirements
 
 - Windows 11, 64-bit.
 - Rust (stable, MSVC toolchain) and the Visual Studio Build Tools.
-- FFmpeg, either `winget install Gyan.FFmpeg.Essentials` or `ffmpeg.exe` and `ffprobe.exe` next to `backtrack.exe`. Backtrack also looks on PATH and in the winget install folder.
+- FFmpeg, for running from source: `winget install Gyan.FFmpeg.Essentials`, or `ffmpeg.exe` and `ffprobe.exe` in an `ffmpeg` folder next to `backtrack.exe`. Backtrack looks there first, then on PATH and in the winget install folder. The installer ships its own copy.
 - WebView2, which comes with Windows 11.
 
 ## Build and run
@@ -56,6 +59,20 @@ If linking fails with `LNK1104: cannot open file`, the checkout folder is too de
 $env:CARGO_TARGET_DIR = 'C:\bt-target'
 ```
 
+## Building the installer
+
+The installer is an NSIS setup made by the Tauri CLI. It installs for the current user, without admin rights, into `%LOCALAPPDATA%\Backtrack`, and puts FFmpeg in an `ffmpeg` folder next to `backtrack.exe`. The app looks there first.
+
+```powershell
+cargo install tauri-cli --version 2.12.6 --locked   # once
+.\tools\stage-ffmpeg.ps1                              # or: -From <an extracted FFmpeg 9.0.2 essentials build>
+cd src-tauri
+cargo tauri build --config tauri.installer.conf.json
+# → target\release\bundle\nsis\Backtrack_<version>_x64-setup.exe
+```
+
+The plain `cargo build` doesn't need FFmpeg staged: the bundle settings only apply when they're merged in with `--config`.
+
 ## Tests
 
 ```powershell
@@ -67,7 +84,10 @@ To drive a running app from a script, start it with `$env:WEBVIEW2_ADDITIONAL_BR
 
 ## Releasing
 
-There are two ways to make a release. Either way, the **Release** workflow tests and builds on GitHub, then publishes `backtrack-vX.Y.Z-windows-x64.zip` and a SHA-256 checksum on the Releases page.
+There are two ways to make a release. Either way, the **Release** workflow tests and builds on GitHub, then publishes these on the Releases page:
+- `backtrack-vX.Y.Z-windows-x64-setup.exe`, the installer, with FFmpeg included;
+- `backtrack-vX.Y.Z-windows-x64.zip`, a portable copy without FFmpeg;
+- `SHA256SUMS.txt`, the checksums for both.
 
 - **Push a tag:**
   ```powershell

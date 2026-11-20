@@ -17,12 +17,19 @@ Everything runs on your PC. There's no account, no cloud and no telemetry.
 
 ## Install
 
-1. Download the latest `backtrack-…-windows-x64.zip` from [Releases](https://github.com/kyle-barth/backtrack/releases/latest) and unzip it anywhere.
-2. Install FFmpeg, which Backtrack uses to record and export:
-   ```powershell
-   winget install Gyan.FFmpeg.Essentials
-   ```
-3. Run `backtrack.exe`.
+Download **`backtrack-…-setup.exe`** from the [latest release](https://github.com/kyle-barth/backtrack/releases/latest) and run it. That's it: FFmpeg comes included, and it installs just for you, with no admin rights needed.
+
+<details>
+<summary>Prefer a portable copy?</summary>
+
+Unzip `backtrack-…-windows-x64.zip` anywhere, install FFmpeg yourself, then run `backtrack.exe`:
+
+```powershell
+winget install Gyan.FFmpeg.Essentials
+```
+
+Backtrack also finds `ffmpeg.exe` and `ffprobe.exe` in an `ffmpeg` folder next to it, or on your PATH.
+</details>
 
 Backtrack needs **Windows 11 (64-bit)**. It has been tested on AMD graphics; NVIDIA (NVENC) and CPU-only recording are built in but have had less testing, so reports are welcome. The app isn't code-signed yet, so Windows may warn you the first time: choose **More info → Run anyway**.
 
@@ -58,6 +65,8 @@ Bug reports, ideas and pull requests are all welcome. Please open an issue first
 ## License
 
 [MIT](LICENSE)
+
+The installer also includes [FFmpeg](https://ffmpeg.org), which is licensed under the GPLv3. Backtrack runs it as a separate program. Its licence, build details and links to its source are installed in the `ffmpeg` folder next to `backtrack.exe`.
 
 ---
 
