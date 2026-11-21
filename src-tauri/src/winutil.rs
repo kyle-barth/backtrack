@@ -224,6 +224,50 @@ pub fn play_chime() {
     }
 }
 
+/// Top-left corner (physical pixels) of the monitor that the window in front fully covers, like a full-screen game.
+/// Any window shown on top of such a game (even a click-through one that never takes focus) makes games running
+/// exclusive full screen, like Rocket League, minimize.
+pub fn fullscreen_monitor() -> Option<(i32, i32)> {
+    use windows_sys::Win32::Foundation::RECT;
+    use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONULL};
+    use windows_sys::Win32::UI::WindowsAndMessaging::{GetClassNameW, GetWindowRect};
+    unsafe {
+        let h = GetForegroundWindow();
+        if h.is_null() {
+            return None;
+        }
+        let mut cls = [0u16; 64];
+        let n = GetClassNameW(h, cls.as_mut_ptr(), cls.len() as i32).max(0) as usize;
+        // The desktop covers the whole monitor too.
+        if matches!(String::from_utf16_lossy(&cls[..n]).as_str(), "Progman" | "WorkerW") {
+            return None;
+        }
+        let mut r: RECT = std::mem::zeroed();
+        let mon = MonitorFromWindow(h, MONITOR_DEFAULTTONULL);
+        let mut mi: MONITORINFO = std::mem::zeroed();
+        mi.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+        if mon.is_null() || GetWindowRect(h, &mut r) == 0 || GetMonitorInfoW(mon, &mut mi) == 0 {
+            return None;
+        }
+        let m = mi.rcMonitor;
+        (r.left <= m.left && r.top <= m.top && r.right >= m.right && r.bottom >= m.bottom).then_some((m.left, m.top))
+    }
+}
+
+/// Make a window click-through without activating it. Tauri's `set_ignore_cursor_events` re-shows the window with
+/// SW_SHOW, which can activate it, and right after a hotkey press Windows lets that take the foreground from a game.
+pub fn click_through(hwnd: *mut core::ffi::c_void) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, SWP_ASYNCWINDOWPOS, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_NOZORDER, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
+    };
+    unsafe {
+        let ex = GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, ex | (WS_EX_TRANSPARENT | WS_EX_LAYERED | WS_EX_NOACTIVATE) as isize);
+        SetWindowPos(hwnd, std::ptr::null_mut(), 0, 0, 0, 0, SWP_ASYNCWINDOWPOS | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    }
+}
+
 /// Add or remove Backtrack from HKCU\...\Run (per user, no admin needed).
 pub fn set_start_with_windows(on: bool) -> Result<(), String> {
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";

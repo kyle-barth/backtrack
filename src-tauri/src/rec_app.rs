@@ -152,18 +152,30 @@ pub fn show_main(app: &AppHandle) {
 
 // ------------------------------------------------------------------ corner pop-up
 
-/// Small always-on-top, click-through, non-activating pop-up in the top-right of the main monitor.
+/// Small always-on-top, click-through, non-activating pop-up in the top-right of the main monitor. Never on top of a
+/// full-screen game (it would minimize): then it goes on another monitor, or isn't shown.
 pub fn toast(app: &AppHandle, title: &str, sub: &str, kind: &str) {
     let app = app.clone();
     let data = serde_json::json!({ "title": title, "sub": sub, "kind": kind }).to_string();
+    let title = title.to_string();
     std::thread::spawn(move || {
         let (w, h) = (340.0, 76.0);
-        let (x, y) = match app.primary_monitor().ok().flatten() {
+        let busy = winutil::fullscreen_monitor();
+        let free = |m: &tauri::Monitor| busy != Some((m.position().x, m.position().y));
+        let monitor = match app.primary_monitor().ok().flatten() {
+            Some(m) if free(&m) => Some(m),
+            _ => app.available_monitors().unwrap_or_default().into_iter().find(|m| free(m)),
+        };
+        let (x, y) = match monitor {
             Some(m) => {
                 let sf = m.scale_factor();
                 let pos = m.position().to_logical::<f64>(sf);
                 let size = m.size().to_logical::<f64>(sf);
                 (pos.x + size.width - w - 20.0, pos.y + 20.0)
+            }
+            None if busy.is_some() => {
+                util::log("info", &format!("pop-up not shown, a full-screen app is in front: {title}"));
+                return;
             }
             None => (40.0, 40.0),
         };
@@ -184,7 +196,9 @@ pub fn toast(app: &AppHandle, title: &str, sub: &str, kind: &str) {
             .build();
         match built {
             Ok(win) => {
-                let _ = win.set_ignore_cursor_events(true);
+                if let Ok(h) = win.hwnd() {
+                    winutil::click_through(h.0);
+                }
                 std::thread::sleep(Duration::from_millis(3400));
                 let _ = win.close();
             }
