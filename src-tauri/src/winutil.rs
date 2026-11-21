@@ -224,9 +224,16 @@ pub fn play_chime() {
     }
 }
 
+/// Whether Windows says a game is running exclusive full screen (it then holds notifications back too). Any window
+/// shown on top of such a game, even a click-through one that never takes focus, makes it minimize. A borderless
+/// full-screen game is an ordinary window, so a pop-up can sit on top of it.
+pub fn exclusive_fullscreen() -> bool {
+    use windows_sys::Win32::UI::Shell::{SHQueryUserNotificationState, QUNS_RUNNING_D3D_FULL_SCREEN};
+    let mut state = 0;
+    unsafe { SHQueryUserNotificationState(&mut state) == 0 && state == QUNS_RUNNING_D3D_FULL_SCREEN }
+}
+
 /// Top-left corner (physical pixels) of the monitor that the window in front fully covers, like a full-screen game.
-/// Any window shown on top of such a game (even a click-through one that never takes focus) makes games running
-/// exclusive full screen, like Rocket League, minimize.
 pub fn fullscreen_monitor() -> Option<(i32, i32)> {
     use windows_sys::Win32::Foundation::RECT;
     use windows_sys::Win32::Graphics::Gdi::{GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONULL};

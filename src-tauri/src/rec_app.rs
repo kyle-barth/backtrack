@@ -152,15 +152,17 @@ pub fn show_main(app: &AppHandle) {
 
 // ------------------------------------------------------------------ corner pop-up
 
-/// Small always-on-top, click-through, non-activating pop-up in the top-right of the main monitor. Never on top of a
-/// full-screen game (it would minimize): then it goes on another monitor, or isn't shown.
+/// Small always-on-top, click-through, non-activating pop-up in the top-right of the main monitor. Shown on top of
+/// borderless games, but never on top of one running exclusive full screen (it would minimize): then it goes on
+/// another monitor, or isn't shown.
 pub fn toast(app: &AppHandle, title: &str, sub: &str, kind: &str) {
     let app = app.clone();
     let data = serde_json::json!({ "title": title, "sub": sub, "kind": kind }).to_string();
     let title = title.to_string();
     std::thread::spawn(move || {
         let (w, h) = (340.0, 76.0);
-        let busy = winutil::fullscreen_monitor();
+        // Over a borderless game is fine; only a game running exclusive full screen would minimize.
+        let busy = winutil::fullscreen_monitor().filter(|_| winutil::exclusive_fullscreen());
         let free = |m: &tauri::Monitor| busy != Some((m.position().x, m.position().y));
         let monitor = match app.primary_monitor().ok().flatten() {
             Some(m) if free(&m) => Some(m),
