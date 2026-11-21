@@ -485,9 +485,12 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .th.is-muted .vol{--c:var(--text-4)!important;opacity:.6}
 .th.is-muted .pct{color:var(--text-3);text-decoration:line-through}
 .th.is-muted::before{background:var(--text-4)}
-.tl-scroll{overflow-x:auto;overflow-y:hidden;margin-right:16px;min-width:0}
+/* The scrollbar's 8 px are always reserved (overflow-x:scroll), so zooming in doesn't shrink the preview.
+   The handles' grab areas and the playhead head stick out past the last second; overflow-x:clip trims them at the
+   right edge like the scroller already does at the left, instead of making the timeline scroll by a few pixels. */
+.tl-scroll{overflow-x:scroll;overflow-y:hidden;margin-right:16px;min-width:0}
 .tl-scroll::-webkit-scrollbar{height:8px}
-.tl-inner{position:relative;min-width:100%}
+.tl-inner{position:relative;min-width:100%;overflow-x:clip}
 .ruler{position:relative;height:var(--ruler-h);cursor:pointer}
 .ruler svg{position:absolute;left:0;bottom:0}
 .rl{position:absolute;top:2px;font-size:11px;font-weight:500;color:var(--text-3);font-variant-numeric:tabular-nums;transform:translateX(-50%);white-space:nowrap;pointer-events:none}
