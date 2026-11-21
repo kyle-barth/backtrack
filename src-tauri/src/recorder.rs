@@ -159,6 +159,8 @@ pub struct Recorder {
     pub game: Mutex<Option<String>>,
     saving: AtomicBool,
     started_at: Mutex<Option<Instant>>,
+    /// The GPU scaler failed on a game's frames: record at the monitor's own size until Backtrack restarts.
+    no_gpu_scale: AtomicBool,
 }
 
 static ENCODER: OnceLock<String> = OnceLock::new();
@@ -239,6 +241,7 @@ impl Recorder {
             game: Mutex::new(None),
             saving: AtomicBool::new(false),
             started_at: Mutex::new(None),
+            no_gpu_scale: AtomicBool::new(false),
         })
     }
 
@@ -266,8 +269,13 @@ impl Recorder {
         on_change();
 
         let encoder = if cfg.encoder == "auto" { detect_encoder(tools) } else { cfg.encoder.clone() };
-        let (w, h) = output_dims(mon.0.max(2), mon.1.max(2), cfg.resolution);
+        let native = (even(mon.0.max(2) as f64), even(mon.1.max(2) as f64));
+        let (mut w, mut h) = output_dims(mon.0.max(2), mon.1.max(2), cfg.resolution);
         let fps = cfg.fps;
+        // Once the GPU scaler has refused a game's frames, record at the monitor's own size (see the restart below).
+        if encoder != "x264" && self.no_gpu_scale.load(Ordering::SeqCst) {
+            (w, h) = native;
+        }
         *self.dims.lock().unwrap() = (w, h, fps);
         let gpu = crate::winutil::gpu_name();
         *self.encoder_desc.lock().unwrap() = match encoder.as_str() {
@@ -307,7 +315,7 @@ impl Recorder {
         args.extend(["-thread_queue_size", "64", "-use_wallclock_as_timestamps", "1", "-itsoffset"].map(s));
         args.push(format!("-{t0_wall:.6}"));
         args.extend(["-f", "lavfi", "-i"].map(s));
-        let scaled = (w, h) != (even(mon.0 as f64), even(mon.1 as f64));
+        let scaled = (w, h) != native;
         match encoder.as_str() {
             "amf" => {
                 args.push(format!("vsrc_amf=monitor_index={}:framerate={fps},settb=AVTB", cfg.monitor));
@@ -392,10 +400,18 @@ impl Recorder {
                 util::log("error", &format!("recorder stopped unexpectedly: {tail}"));
                 let ran_long = me.started_at.lock().unwrap().map_or(false, |t| t.elapsed().as_secs() > 20);
                 let same_session = me.session.lock().unwrap().as_ref().map(|s| s.id) == Some(id);
-                if ran_long && same_session {
+                // Some full-screen games switch the frames they hand the display to a format the GPU scaler refuses
+                // mid-recording (AMD vpp_amf: "SubmitInput() failed with error 4", seen with Rocket League). The
+                // encoder itself takes them, so carry on at the monitor's own size.
+                let scaler_failed = scaled && (tail.contains("vpp_amf") || tail.contains("scale_d3d11"));
+                if scaler_failed {
+                    me.no_gpu_scale.store(true, Ordering::SeqCst);
+                    util::log("warn", "recorder: the GPU scaler refused the game's frames, recording at the monitor's own size until Backtrack restarts");
+                }
+                if (ran_long || scaler_failed) && same_session {
                     // A transient failure (e.g. display mode change when a game goes full screen): restart.
                     util::log("info", "restarting recorder");
-                    std::thread::sleep(std::time::Duration::from_secs(2));
+                    std::thread::sleep(std::time::Duration::from_secs(if scaler_failed { 0 } else { 2 }));
                     if let Err(e) = me.start(&tools2, &cfg2, mon, on_change.clone()) {
                         me.set_state("error", Some(e));
                         on_change();
