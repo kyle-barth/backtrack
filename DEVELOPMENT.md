@@ -78,7 +78,10 @@ The plain `cargo build` doesn't need FFmpeg staged: the bundle settings only app
 ```powershell
 cargo test                             # unit tests: export ladder, audio mix graph, date and keyframe parsing
 cargo test -- --ignored --nocapture    # end to end on the clips in your own library: scan, waveform, two 10 MB exports
+cargo test colour -- --ignored --nocapture   # recorded colours match the screen (covers a monitor for ~10 s)
 ```
+
+The colour test fills a monitor with colour swatches through a game-like swap chain (RGBA, then BGRA), records it with the recorder's own pipeline, saves it the way a clip is saved, and checks each swatch's colour and warmth (red minus blue). Set `BACKTRACK_TEST_MONITOR` to pick the monitor (default 0), and `BACKTRACK_TEST_CAPTURE=vsrc_amf` to try AMD's old capture, which fails it.
 
 To drive a running app from a script, start it with `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'`. Then use `tools/cdp.ps1 -Eval "<js>"` or `-Shot out.png`.
 

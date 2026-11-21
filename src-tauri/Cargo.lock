@@ -230,6 +230,7 @@ dependencies = [
  "tauri-plugin-single-instance",
  "trash",
  "wasapi",
+ "windows",
  "windows-sys 0.59.0",
 ]
 

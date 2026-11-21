@@ -480,6 +480,7 @@ function create(){
     reveal: ({path}) => { logs.push(['info', 'reveal ' + path]); return delay(30); },
     open_path: ({path}) => { logs.push(['info', 'open_path ' + path]); return delay(30); },
     open_discord: () => { logs.push(['info', 'open_discord']); return delay(30); },
+    open_taskbar_settings: () => { logs.push(['info', 'open_taskbar_settings']); return delay(30); },
     trash_clip({clipId}){
       const c = need(clipId); clips.splice(clips.indexOf(c), 1); bin.set(c.id, c);
       setTimeout(() => emit('library-changed', null), 60);

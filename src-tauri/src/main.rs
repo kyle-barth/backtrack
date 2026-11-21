@@ -356,6 +356,13 @@ fn open_discord() -> Result<(), String> {
     sys::open_discord()
 }
 
+/// Windows' taskbar settings. Only its "Other system tray icons" switches can put an app's icon next to the clock:
+/// Windows 11 doesn't let apps do it themselves (the NotifyIconSettings registry values are only a copy).
+#[tauri::command]
+fn open_taskbar_settings() -> Result<(), String> {
+    open::that_detached("ms-settings:taskbar").map_err(|e| e.to_string())
+}
+
 #[tauri::command]
 fn trash_clip(app: AppHandle, state: St, clip_id: String) -> Result<(), String> {
     let clip = state.clip(&clip_id)?;
@@ -634,6 +641,7 @@ fn main() {
             reveal,
             open_path,
             open_discord,
+            open_taskbar_settings,
             trash_clip,
             trash_clips,
             trash_check,

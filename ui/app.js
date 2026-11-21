@@ -1981,6 +1981,7 @@ $('#micDd').addEventListener('click',async e=>{
     ...ins.map(i=>({v:i.id,label:i.name,sub:i.isDefault?'The Windows default right now':'',on:r.micDevice===i.id}))],
     it=>{if(it.v!==recCfg().micDevice)saveRecorder({micDevice:it.v},[`Microphone: ${it.v?it.label:'Windows default'}`,'mic']);},'right');
 });
+$('#openTaskbarSettings').addEventListener('click',()=>BT.openTaskbarSettings().then(()=>toast('Under “Other system tray icons”, turn on Backtrack','info'),e=>fail("Couldn't open the taskbar settings",e)));
 $('#openClipsDir').addEventListener('click',()=>{const r=recCfg();if(r)BT.openPath(r.clipsDir).catch(e=>fail("Couldn't open the folder",e));});
 $('#changeClipsDir').addEventListener('click',async()=>{
   const r=recCfg();if(!r)return;

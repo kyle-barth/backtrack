@@ -67,6 +67,7 @@ const BT = {
   reveal:           path                    => call('reveal', { path }),
   openPath:         path                    => call('open_path', { path }),
   openDiscord:      ()                      => call('open_discord'),
+  openTaskbarSettings: ()                   => call('open_taskbar_settings'),
   trashClip:        clipId                  => call('trash_clip', { clipId }),
   /** can the Recycle Bin keep this batch? → { fits, drives: [{ drive, bytes, capacity|null, permanent }] } (no file changes) */
   trashCheck:       clipIds                 => call('trash_check', { clipIds }),

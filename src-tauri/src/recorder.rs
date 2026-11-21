@@ -194,6 +194,62 @@ fn detect_encoder(tools: &Tools) -> String {
         .clone()
 }
 
+static GFX: OnceLock<bool> = OnceLock::new();
+
+/// Whether this ffmpeg can feed the AMD encoder from Windows Graphics Capture (`gfxcapture`, FFmpeg 8+), tested once.
+fn gfx_capture(tools: &Tools) -> bool {
+    *GFX.get_or_init(|| {
+        let ok = tools
+            .ffmpeg_cmd()
+            .args(["-v", "error", "-f", "lavfi", "-i", "gfxcapture=monitor_idx=0:max_framerate=10:capture_cursor=0"])
+            .args(["-vf", "hwdownload,format=bgra", "-c:v", "h264_amf", "-frames:v", "1", "-f", "null", "-"])
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false);
+        util::log("info", &format!("recorder capture: {}", if ok { "Windows Graphics Capture" } else { "AMD (vsrc_amf)" }));
+        ok
+    })
+}
+
+/// The capture source (a lavfi graph) and the filter and encoder arguments that turn it into H.264 of `(w, h)`.
+/// `scaled`: that size isn't the monitor's own. `gfx`: see [`gfx_capture`].
+pub(crate) fn video_pipeline(encoder: &str, gfx: bool, monitor: u32, fps: u32, (w, h): (u32, u32), scaled: bool) -> (String, Vec<String>) {
+    let args = |a: &[&str]| a.iter().map(|x| x.to_string()).collect::<Vec<_>>();
+    match encoder {
+        // Windows Graphics Capture, scaled by Windows on the GPU, then into the encoder through memory (~1% CPU).
+        // AMD's own capture (vsrc_amf) passes a full-screen game's RGBA frames on labelled as BGRA, so red and blue
+        // swap and clips come out blue (seen with Rocket League), and AMF can't colour-convert textures it didn't
+        // create (DirectX error 18), so they can't go to the encoder on the GPU.
+        // From RGB, AMF encodes full-range BT.709 but doesn't say so in the stream, and a saved clip is a copy of
+        // the stream, so players would take it as limited range (too dark, too contrasty): h264_metadata says so.
+        "amf" if gfx => {
+            let size = if scaled { format!(":width={w}:height={h}") } else { String::new() };
+            let mut rest = args(&["-vf", "hwdownload,format=bgra,setparams=color_trc=bt709:colorspace=bt709"]);
+            rest.extend(args(&["-c:v", "h264_amf", "-quality", "balanced", "-rc", "vbr_peak"]));
+            rest.extend(args(&["-bsf:v", "h264_metadata=video_full_range_flag=1:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]));
+            (format!("gfxcapture=monitor_idx={monitor}:max_framerate={fps}:capture_cursor=0:resize_mode=scale{size},settb=AVTB"), rest)
+        }
+        // Older ffmpeg without gfxcapture.
+        "amf" => {
+            let mut rest = if scaled { vec!["-vf".into(), format!("vpp_amf=w={w}:h={h}:format=nv12")] } else { vec![] };
+            rest.extend(args(&["-c:v", "h264_amf", "-quality", "balanced", "-rc", "vbr_peak"]));
+            (format!("vsrc_amf=monitor_index={monitor}:framerate={fps},settb=AVTB"), rest)
+        }
+        "nvenc" => {
+            let mut rest = if scaled { vec!["-vf".into(), format!("scale_d3d11=width={w}:height={h}:format=nv12")] } else { vec![] };
+            rest.extend(args(&["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-rc", "vbr"]));
+            (format!("ddagrab=output_idx={monitor}:framerate={fps}:draw_mouse=0,settb=AVTB"), rest)
+        }
+        _ => {
+            let mut rest = vec!["-vf".into(), format!("hwdownload,format=bgra,scale={w}:{h},format=yuv420p")];
+            rest.extend(args(&["-c:v", "libx264", "-preset", "veryfast"]));
+            (format!("ddagrab=output_idx={monitor}:framerate={fps}:draw_mouse=0,settb=AVTB"), rest)
+        }
+    }
+}
+
 fn even(x: f64) -> u32 {
     ((x / 2.0).round() as u32).max(1) * 2
 }
@@ -316,30 +372,11 @@ impl Recorder {
         args.push(format!("-{t0_wall:.6}"));
         args.extend(["-f", "lavfi", "-i"].map(s));
         let scaled = (w, h) != native;
-        match encoder.as_str() {
-            "amf" => {
-                args.push(format!("vsrc_amf=monitor_index={}:framerate={fps},settb=AVTB", cfg.monitor));
-                args.extend(["-map", "3:v:0"].map(s));
-                if scaled {
-                    args.extend(["-vf".into(), format!("vpp_amf=w={w}:h={h}:format=nv12")]);
-                }
-                args.extend(["-c:v", "h264_amf", "-quality", "balanced", "-rc", "vbr_peak"].map(s));
-            }
-            "nvenc" => {
-                args.push(format!("ddagrab=output_idx={}:framerate={fps}:draw_mouse=0,settb=AVTB", cfg.monitor));
-                args.extend(["-map", "3:v:0"].map(s));
-                if scaled {
-                    args.extend(["-vf".into(), format!("scale_d3d11=width={w}:height={h}:format=nv12")]);
-                }
-                args.extend(["-c:v", "h264_nvenc", "-preset", "p4", "-tune", "ll", "-rc", "vbr"].map(s));
-            }
-            _ => {
-                args.push(format!("ddagrab=output_idx={}:framerate={fps}:draw_mouse=0,settb=AVTB", cfg.monitor));
-                args.extend(["-map", "3:v:0"].map(s));
-                args.extend(["-vf".into(), format!("hwdownload,format=bgra,scale={w}:{h},format=yuv420p")]);
-                args.extend(["-c:v", "libx264", "-preset", "veryfast"].map(s));
-            }
-        }
+        let gfx = encoder == "amf" && gfx_capture(tools);
+        let (src, rest) = video_pipeline(&encoder, gfx, cfg.monitor, fps, (w, h), scaled);
+        args.push(src);
+        args.extend(["-map", "3:v:0"].map(s));
+        args.extend(rest);
         args.extend(["-b:v".into(), format!("{b}M"), "-maxrate".into(), format!("{}M", b * 3 / 2), "-bufsize".into(), format!("{}M", b * 2)]);
         args.extend(["-g".into(), fps.to_string(), "-bf".into(), "0".into()]);
         args.extend(["-fps_mode", "cfr", "-r"].map(s));
@@ -602,6 +639,9 @@ impl Recorder {
         Ok(Saved { path: out.to_string_lossy().into_owned(), game: game.to_string(), duration, at: now })
     }
 }
+
+#[cfg(test)]
+mod colour_test;
 
 #[cfg(test)]
 mod tests {
