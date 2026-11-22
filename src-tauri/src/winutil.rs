@@ -275,6 +275,23 @@ pub fn click_through(hwnd: *mut core::ffi::c_void) {
     }
 }
 
+/// Show a window topmost at a position (physical pixels) without activating it, for the reused pop-up. Only Win32 is
+/// used to show and hide it after it's made, so Tauri never re-shows it with SW_SHOW (see click_through).
+pub fn show_no_activate(hwnd: *mut core::ffi::c_void, x: i32, y: i32) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SetWindowPos, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOSIZE, SWP_SHOWWINDOW};
+    unsafe {
+        SetWindowPos(hwnd, HWND_TOPMOST, x, y, 0, 0, SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW);
+    }
+}
+
+/// Hide a window (hiding one that isn't active doesn't move the focus).
+pub fn hide(hwnd: *mut core::ffi::c_void) {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{ShowWindow, SW_HIDE};
+    unsafe {
+        ShowWindow(hwnd, SW_HIDE);
+    }
+}
+
 /// Add or remove Backtrack from HKCU\...\Run (per user, no admin needed).
 pub fn set_start_with_windows(on: bool) -> Result<(), String> {
     let key = r"HKCU\Software\Microsoft\Windows\CurrentVersion\Run";

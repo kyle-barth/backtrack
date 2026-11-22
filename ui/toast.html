@@ -5,7 +5,9 @@
 <title>Backtrack</title>
 <style>
   /* The "clip saved" pop-up shown in the corner of the game. A native, click-through, always-on-top window
-     owned by the Rust side; it reads its text from window.__TOAST = { title, sub, kind }. */
+     owned by the Rust side, made once and reused: it reads its first text from window.__TOAST = { title, sub, kind },
+     and each later one comes through show(). It only animates while sliding in and out (a fraction of a second):
+     any animation over a game makes the page draw at the monitor's refresh rate, 360 times a second here. */
   :root {
     --bg: rgba(18, 21, 26, .94); --line: rgba(255, 255, 255, .08); --text: #eef1f4; --muted: #a3acb6;
     --ok: #2bd9b8; --ok-ink: #03211b; --warn: #f2b04c; --err: #ff6b78; --mark: #ff7ac6;
@@ -18,8 +20,8 @@
   .t { position: absolute; top: 6px; bottom: 6px; right: 6px; width: max-content; max-width: calc(100% - 12px); box-sizing: border-box;
     display: flex; align-items: center; gap: 12px; padding: 0 14px;
     background: var(--bg); border: 1px solid var(--line); border-radius: 14px; color: var(--text);
-    box-shadow: 0 10px 30px rgba(0, 0, 0, .45); transform: translateX(24px); opacity: 0;
-    animation: in .28s cubic-bezier(.2, .8, .2, 1) forwards, out .3s ease-in 2.9s forwards; }
+    box-shadow: 0 10px 30px rgba(0, 0, 0, .45); transform: translateX(24px); opacity: 0; }
+  .t.go { animation: in .28s cubic-bezier(.2, .8, .2, 1) forwards, out .3s ease-in 2.9s forwards; }
   .ic { flex: 0 0 auto; width: 34px; height: 34px; border-radius: 10px; display: grid; place-items: center;
     background: var(--ok); color: var(--ok-ink); }
   .t.warn .ic { background: var(--warn); color: #2a1a00; }
@@ -30,22 +32,16 @@
   .tx { min-width: 0; }
   b { display: block; font-size: 14px; font-weight: 650; letter-spacing: .1px; }
   span { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bar { position: absolute; left: 14px; right: 14px; bottom: 6px; height: 2px; border-radius: 2px; background: var(--ok); opacity: .55;
-    transform-origin: left; animation: drain 3s linear forwards; }
-  .t.err .bar { background: var(--err); } .t.warn .bar { background: var(--warn); } .t.mark .bar { background: var(--mark); }
   @keyframes in { to { transform: none; opacity: 1; } }
   @keyframes out { to { transform: translateX(16px); opacity: 0; } }
-  @keyframes drain { from { transform: scaleX(1); } to { transform: scaleX(0); } }
 </style>
 </head>
 <body>
   <div class="t" id="t">
     <div class="ic" id="ic"></div>
     <div class="tx"><b id="title">Clip saved</b><span id="sub"></span></div>
-    <div class="bar"></div>
   </div>
 <script>
-  const d = window.__TOAST || { title: 'Clip saved', sub: '', kind: 'ok' };
   const icons = {
     ok: '<svg viewBox="0 0 24 24"><path d="M5 12.5l4.2 4.2L19 7"/></svg>',
     warn: '<svg viewBox="0 0 24 24"><path d="M12 8v5M12 16.5v.5"/><path d="M10.3 3.9L2.6 17.5A2 2 0 0 0 4.3 20.5h15.4a2 2 0 0 0 1.7-3L13.7 3.9a2 2 0 0 0-3.4 0z"/></svg>',
@@ -53,11 +49,17 @@
     mark: '<svg viewBox="0 0 24 24"><path d="M12 3l3 6 6 .9-4.5 4.3 1 6.3L12 17.5 6.5 20.5l1-6.3L3 9.9 9 9z"/></svg>',
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/></svg>',
   };
-  const kind = icons[d.kind] ? d.kind : 'ok';
-  document.getElementById('t').classList.add(kind);
-  document.getElementById('ic').innerHTML = icons[kind];
-  document.getElementById('title').textContent = d.title || '';
-  document.getElementById('sub').textContent = d.sub || '';
+  // Show { title, sub, kind } and play the slide in and out from the start.
+  function show(d) {
+    const t = document.getElementById('t'), kind = icons[d.kind] ? d.kind : 'ok';
+    t.className = 't ' + kind;
+    document.getElementById('ic').innerHTML = icons[kind];
+    document.getElementById('title').textContent = d.title || '';
+    document.getElementById('sub').textContent = d.sub || '';
+    void t.offsetWidth;   // restart the animations
+    t.classList.add('go');
+  }
+  show(window.__TOAST || { title: 'Clip saved', sub: '', kind: 'ok' });
 </script>
 </body>
 </html>

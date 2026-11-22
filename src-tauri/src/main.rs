@@ -13,6 +13,8 @@ mod sys;
 mod update;
 mod util;
 mod winutil;
+#[cfg(test)]
+mod ui_test;
 
 use export::{ExportRequest, ExportResult, Job};
 use ffmpeg::Tools;
@@ -160,7 +162,10 @@ fn spawn_thumbs(app: AppHandle, st: Arc<AppState>) {
         if let (Some(tools), false) = (st.tools(), missing.is_empty()) {
             let dir = util::cache_sub("thumbs");
             for (id, path, dur) in missing {
-                if media::generate_thumb(&tools, &path, dur, &dir.join(format!("{id}.jpg"))) {
+                let out = dir.join(format!("{id}.jpg"));
+                if media::generate_thumb(&tools, &path, dur, &out) {
+                    // Just this clip changed: no need to rescan the whole library.
+                    st.lib.set_thumb(&id, &out.to_string_lossy());
                     made += 1;
                 } else {
                     st.thumb_failed.lock().unwrap().insert(id);
@@ -169,7 +174,6 @@ fn spawn_thumbs(app: AppHandle, st: Arc<AppState>) {
         }
         st.lib.thumbs_busy.store(false, Ordering::SeqCst);
         if made > 0 {
-            st.scan();
             let _ = app.emit("library-changed", ());
         }
     });
@@ -628,6 +632,7 @@ fn main() {
             let st = state.clone();
             std::thread::spawn(move || {
                 st.scan();
+                export::clean_stale_passlogs();
             });
             if let Some(win) = app.get_webview_window("main") {
                 // Fit the window on smaller or scaled displays.

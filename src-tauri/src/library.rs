@@ -235,14 +235,12 @@ impl Library {
                 }
             });
             let mut index = self.index.lock().unwrap();
-            for (k, p) in results.into_inner().unwrap() {
-                index.insert(k, p);
-            }
-            // Forget files that no longer exist.
+            // New probes in, files that no longer exist out; written only if that changed anything.
             let live: std::collections::HashSet<&str> = found.iter().map(|f| f.key.as_str()).collect();
-            index.retain(|k, _| live.contains(k.as_str()));
-            if let Err(e) = write_json_atomic(&util::cache_dir().join("index.json"), &*index) {
-                util::log("error", &format!("saving index.json: {e}"));
+            if update_index(&mut index, results.into_inner().unwrap(), &live) {
+                if let Err(e) = write_json_atomic(&util::cache_dir().join("index.json"), &*index) {
+                    util::log("error", &format!("saving index.json: {e}"));
+                }
             }
         }
 
@@ -319,6 +317,13 @@ impl Library {
         clips.sort_by(|a, b| b.recorded_at.cmp(&a.recorded_at));
         *self.clips.lock().unwrap() = clips.clone();
         clips
+    }
+
+    /// Give one clip the thumbnail just made for it.
+    pub fn set_thumb(&self, id: &str, thumb: &str) {
+        if let Some(c) = self.clips.lock().unwrap().iter_mut().find(|c| c.id == id) {
+            c.thumb = Some(thumb.to_string());
+        }
     }
 
     /// Clips that have no thumbnail yet: (id, path, duration).
@@ -416,6 +421,19 @@ impl Library {
             self.save_store(&store);
         }
     }
+}
+
+/// Add a scan's new probes to the index and forget files that no longer exist (not in `live`). Returns whether the
+/// index changed, so index.json (166 KB here) is only rewritten when it did: a file that fails to probe, e.g. a broken
+/// one probed again on every launch, changes nothing.
+fn update_index(index: &mut HashMap<String, Probe>, results: Vec<(String, Probe)>, live: &std::collections::HashSet<&str>) -> bool {
+    let before = index.len();
+    let probed = !results.is_empty();
+    for (k, p) in results {
+        index.insert(k, p);
+    }
+    index.retain(|k, _| live.contains(k.as_str()));
+    probed || index.len() != before
 }
 
 /// GG keeps thumbnails in `<clip dir>\thumbs\<stem>-<epoch>-thumb.jpg`. Map lowercase stem → path.
@@ -584,5 +602,63 @@ mod tests {
 
         let again: Store = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
         assert_eq!(again.clips["c:\\clips\\a.mp4"].edits.as_ref().unwrap().in_t, 1.0);
+    }
+
+    fn clip(id: &str) -> Clip {
+        Clip {
+            id: id.into(), path: format!("C:\\Clips\\{id}.mp4"), file_name: format!("{id}.mp4"), game: "Rocket League".into(),
+            game_id: "rocket-league".into(), recorded_at: 0, duration: 60.0, size_bytes: 1 << 20, width: 1920, height: 1080,
+            fps: 60.0, video_kbps: 25_000.0, audio_tracks: vec![], thumb: None, fav: false, edits: None, exports: vec![],
+            source: "backtrack".into(),
+        }
+    }
+
+    /// A library in memory only: nothing read from or written to the user's folders.
+    fn library(clips: Vec<Clip>) -> Library {
+        Library {
+            index: Mutex::new(HashMap::new()),
+            store: Mutex::new(Store::default()),
+            clips: Mutex::new(clips),
+            scan_lock: Mutex::new(()),
+            unreadable: Mutex::new(HashMap::new()),
+            wave_base: Mutex::new(HashMap::new()),
+            thumbs_busy: AtomicBool::new(false),
+        }
+    }
+
+    /// After a save, the new clip's thumbnail is given to that one clip instead of rescanning the library (276 files, a
+    /// probe and index.json, while the game runs).
+    #[test]
+    fn set_thumb_changes_only_that_clip() {
+        let lib = library(vec![clip("a"), clip("b")]);
+        lib.set_thumb("b", r"C:\Thumbs\b.jpg");
+        assert_eq!(lib.get("b").unwrap().thumb.as_deref(), Some(r"C:\Thumbs\b.jpg"));
+        assert_eq!(lib.get("a").unwrap().thumb, None);
+        let missing: Vec<String> = lib.missing_thumbs().into_iter().map(|(id, _, _)| id).collect();
+        assert_eq!(missing, vec!["a".to_string()]);
+        lib.set_thumb("gone", r"C:\Thumbs\gone.jpg"); // a clip deleted meanwhile: nothing to do
+        assert_eq!(lib.clips.lock().unwrap().len(), 2);
+    }
+
+    /// index.json is rewritten only when a scan changed the index: not when nothing is new, nor when the only files
+    /// to probe can't be read (two broken clips here were probed, and the whole file rewritten, on every launch).
+    #[test]
+    fn index_is_only_rewritten_when_it_changed() {
+        let probe = |size: u64| Probe { size, duration: 1.0, ..Probe::default() };
+        let mut index: HashMap<String, Probe> = [("a".to_string(), probe(1)), ("b".to_string(), probe(2))].into();
+        let live: std::collections::HashSet<&str> = ["a", "b", "broken"].into();
+        assert!(!update_index(&mut index, vec![], &live), "nothing new (or only unreadable files)");
+        assert_eq!(index.len(), 2);
+
+        let live: std::collections::HashSet<&str> = ["a", "b", "c"].into();
+        assert!(update_index(&mut index, vec![("c".into(), probe(3))], &live), "a new clip");
+        assert_eq!(index["c"].size, 3);
+        assert!(update_index(&mut index, vec![("a".into(), probe(4))], &live), "a changed clip");
+        assert_eq!(index["a"].size, 4);
+
+        let live: std::collections::HashSet<&str> = ["a", "c"].into();
+        assert!(update_index(&mut index, vec![], &live), "a deleted clip");
+        assert!(!index.contains_key("b"));
+        assert!(!update_index(&mut index, vec![], &live), "and then nothing new");
     }
 }

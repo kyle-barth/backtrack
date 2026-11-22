@@ -1884,8 +1884,8 @@ function applyStatus(st){
   if(!st)return;const prev=REC.status;REC.status=st;
   if(st.state==='on'){REC.wave.shift();REC.wave.push(Math.max(lvlOf(st,'Game'),lvlOf(st,'Mic')));}
   else if(prev&&prev.state==='on')REC.wave.fill(0);
-  renderRecorder();
   if(prev&&prev.state!==st.state&&st.state==='error'){REC.errAt=Date.now();toast(`Recorder error · ${st.error||'something went wrong'}`,'alert');}
+  if(!document.hidden)renderRecorder();   // hidden (tray, minimized): drawn when it's shown again
 }
 function renderRecorder(){
   renderPill();renderBufCard();renderRecLive();
@@ -1946,16 +1946,18 @@ function renderBufCard(){
   $('#bcDot').className='rec-dot'+(on?'':state==='error'?' warn':state==='starting'?' starting':' off');
   const sub=on?`Recording · ${st.height}p${st.fps}${st.micMuted?' · mic muted':''}`:state==='starting'?'Starting…':state==='error'?(st.error||'Recorder error'):state==='off'?'Off · not recording':'Checking…';
   const se=$('#bcSub');if(se.textContent!==sub)se.textContent=sub;se.title=on?`${st.width} × ${st.height} · ${st.fps} fps · ${st.encoder}`:sub;
+  // Twice a second while recording: write only what changed.
   const w=$('#bcWave');if(!w.children.length)w.innerHTML='<i></i>'.repeat(REC.wave.length);
-  [...w.children].forEach((b,i)=>b.style.height=(on?Math.max(8,REC.wave[i]*100):8)+'%');
+  [...w.children].forEach((b,i)=>{const h=(on?Math.max(8,Math.round(REC.wave[i]*100)):8)+'%';if(b.style.height!==h)b.style.height=h;});
   const filled=on?clamp(+st.filledSecs||0,0,r.bufferSecs):0;
-  $('#bcFill').style.width=(on?filled/r.bufferSecs*100:0)+'%';
+  const fw=(on?filled/r.bufferSecs*100:0)+'%',fill=$('#bcFill');if(fill.style.width!==fw)fill.style.width=fw;
   $('#bcGauge').title=on?`${Math.floor(filled)} of ${len} buffered`:'';
-  $('#bcFoot').innerHTML=`Saves the last <b>${len}</b>`;
-  $('#bcReady').textContent=on?(filled>=r.bufferSecs-.5?'Full':`${Math.floor(filled)} s ready`):'';
-  $('#bcSave').disabled=!on||filled<1;$('#bcKeys').innerHTML=kbdHTML(r.hotkeys.save);
+  setHTML($('#bcFoot'),`Saves the last <b>${len}</b>`);
+  const ready=on?(filled>=r.bufferSecs-.5?'Full':`${Math.floor(filled)} s ready`):'',re=$('#bcReady');if(re.textContent!==ready)re.textContent=ready;
+  $('#bcSave').disabled=!on||filled<1;setHTML($('#bcKeys'),kbdHTML(r.hotkeys.save));
   syncBufferSwitches();
 }
+function setHTML(el,h){if(el.dataset.h!==h){el.innerHTML=h;el.dataset.h=h;}}
 let bufBusy=false;
 async function setBufferEnabled(on){
   const r=recCfg();if(!r||bufBusy)return;bufBusy=true;
@@ -2091,10 +2093,6 @@ BT.on('clip-saved',p=>{
   toast(`Clip saved · ${p.game||'Clip'} · ${Math.round(+p.duration||0)} s`,'check-c',{label:'Open',icon:'play',fn:()=>openSavedClip(p.path)});
 });
 BT.on('recorder-status',applyStatus);
-/* Animations that never end (the recording dot's pulse) stop while Backtrack doesn't have focus, which is most of the
-   time: behind a game, in the tray. An animation makes the page draw at the monitor's refresh rate. */
-const markIdle=()=>document.documentElement.classList.toggle('idle',!document.hasFocus());
-addEventListener('focus',markIdle);addEventListener('blur',markIdle);markIdle();
 
 /* ================================================================== TITLE BAR */
 const winCall=(f,what)=>f().catch(e=>BT.log('warn',`window ${what} failed: ${errMsg(e)}`));
@@ -2278,7 +2276,15 @@ async function refetch(){
   }catch(e){BT.log('warn','refresh after library-changed failed: '+errMsg(e));}
   finally{refetching=false;openPendingClip();if(refetchAgain){refetchAgain=false;refetch();}}
 }
-BT.on('library-changed',()=>{clearTimeout(refetchT);refetchT=setTimeout(refetch,200);});
+/* A clip saved from the tray (mid-game) changes the library while nobody can see it: the rescan, probe and
+   thumbnail wait until the window is shown. */
+let libDirty=false;
+BT.on('library-changed',()=>{if(document.hidden){libDirty=true;return;}clearTimeout(refetchT);refetchT=setTimeout(refetch,200);});
+document.addEventListener('visibilitychange',()=>{
+  if(document.hidden)return;
+  renderRecorder();
+  if(libDirty){libDirty=false;refetch();}
+});
 BT.appVersion().then(v=>{S.version=v||'';if(cur().startsWith('settings'))renderSettings();}).catch(()=>{});
 
 renderSide();

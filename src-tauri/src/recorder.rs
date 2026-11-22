@@ -392,7 +392,7 @@ impl Recorder {
 
         util::log("info", &format!("recorder: {} {}x{}@{} {}Mbps monitor {}", encoder, w, h, fps, b, cfg.monitor));
         let mut child = tools
-            .ffmpeg_cmd()
+            .recorder_cmd()
             .args(&args)
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
@@ -667,5 +667,41 @@ mod tests {
         assert_eq!(file_safe_game("Rocket League"), "Rocket-League");
         assert_eq!(file_safe_game("Call of Duty: Modern Warfare 2 (2009)"), "Call-of-Duty-Modern-Warfare-2-(2009)");
         assert_eq!(file_safe_game("HELLDIVERS™ 2"), "HELLDIVERS™-2");
+    }
+
+    /// The `-vf` filter chain in the encoder arguments.
+    fn filters(rest: &[String]) -> Option<&str> {
+        rest.windows(2).find(|w| w[0] == "-vf").map(|w| w[1].as_str())
+    }
+
+    /// Windows Graphics Capture may deliver frames at 4× the clip's rate (at exactly the rate it held back frames that
+    /// came a little early, and v0.4.0's clips stuttered), so fps must pick the clip's frames first, while they're
+    /// still on the GPU: after hwdownload, every extra frame would be copied to memory too (8 MB each at 1080p).
+    /// Scaling stays on the GPU (gfxcapture's resize_mode), never a CPU scale filter. The frame tests check the
+    /// smoothness on real hardware.
+    #[test]
+    fn gfx_capture_takes_4x_frames_and_keeps_the_clips_before_leaving_the_gpu() {
+        for (fps, scaled) in [(60, true), (60, false), (30, true), (120, false)] {
+            let (src, rest) = video_pipeline("amf", true, 1, fps, (1920, 1080), scaled);
+            assert!(src.starts_with("gfxcapture=monitor_idx=1:"), "{src}");
+            assert!(src.contains(&format!(":max_framerate={}:", fps * 4)), "4× the clip's rate: {src}");
+            assert_eq!(src.contains("resize_mode=scale:width=1920:height=1080"), scaled, "scaled by Windows on the GPU: {src}");
+            let vf = filters(&rest).expect("a filter chain");
+            assert!(vf.starts_with(&format!("fps={fps},hwdownload,")), "fps before hwdownload: {vf}");
+            assert!(!vf.contains("scale="), "no CPU scaling: {vf}");
+        }
+    }
+
+    /// NVENC's capture and scaler stay on the GPU; nothing is copied to memory.
+    #[test]
+    fn nvenc_keeps_frames_on_the_gpu() {
+        for scaled in [true, false] {
+            let (src, rest) = video_pipeline("nvenc", false, 0, 60, (1920, 1080), scaled);
+            assert!(src.starts_with("ddagrab=") && src.contains(":framerate=60:"), "{src}");
+            match filters(&rest) {
+                Some(vf) => assert!(scaled && vf.starts_with("scale_d3d11=") && !vf.contains("hwdownload"), "{vf}"),
+                None => assert!(!scaled),
+            }
+        }
     }
 }

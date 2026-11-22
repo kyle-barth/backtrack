@@ -215,6 +215,36 @@ fn video_chain(clip: &Clip, plan: &Plan, vertical: bool, crop_x: f64) -> String 
     format!("[0:v:0]{}[vout]", f.join(","))
 }
 
+/// x264's two-pass log files for one export (`-passlogfile` prefix), deleted when this is dropped: when the export
+/// finishes, fails or is cancelled. Before, only a finished export cleaned up, and the rest piled up.
+struct PassLogs(String);
+
+const PASSLOG_SUFFIXES: [&str; 4] = ["-0.log", "-0.log.mbtree", "-0.log.temp", "-0.log.mbtree.temp"];
+
+impl Drop for PassLogs {
+    fn drop(&mut self) {
+        for suffix in PASSLOG_SUFFIXES {
+            let _ = std::fs::remove_file(format!("{}{suffix}", self.0));
+        }
+    }
+}
+
+/// Delete two-pass logs left by older versions or a crash: anything over an hour old (no export runs that long).
+pub fn clean_stale_passlogs() {
+    remove_stale(&util::cache_sub("passlog"), 3600);
+}
+
+/// Delete the files in `dir` last changed more than `max_secs` ago (a test runs it on a folder of its own).
+fn remove_stale(dir: &Path, max_secs: u64) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let old = e.metadata().and_then(|m| m.modified()).ok().and_then(|t| t.elapsed().ok()).is_some_and(|age| age.as_secs() > max_secs);
+        if old {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
+}
+
 /// Run ffmpeg with `-progress pipe:1`, reporting the fraction of `dur` encoded so far.
 fn run_ffmpeg(
     tools: &Tools,
@@ -314,6 +344,7 @@ pub fn export(ctx: &ExportCtx, req: &ExportRequest, mut progress: impl FnMut(Pro
             Mode::Encode => {
                 let passlog = util::cache_sub("passlog").join(format!("job{}", util::now_ms()));
                 let passlog_s = passlog.to_string_lossy().into_owned();
+                let _logs = PassLogs(passlog_s.clone());
                 let vchain = video_chain(clip, &plan, vertical, req.crop_x);
                 let x264 = |vk: f64| {
                     vec![
@@ -354,9 +385,6 @@ pub fn export(ctx: &ExportCtx, req: &ExportRequest, mut progress: impl FnMut(Pro
                         }
                         _ => break,
                     }
-                }
-                for suffix in ["-0.log", "-0.log.mbtree", "-0.log.temp", "-0.log.mbtree.temp"] {
-                    let _ = std::fs::remove_file(format!("{passlog_s}{suffix}"));
                 }
                 Ok(())
             }
@@ -461,5 +489,57 @@ mod tests {
         ]).unwrap();
         assert_eq!(g, "[0:a:0]volume=1.000[a0];[0:a:1]volume=0.800[a1];[a0][a1]amix=inputs=2:normalize=0:dropout_transition=0[aout]");
         assert!(audio_graph(&c, &[TrackMix { index: 0, volume: 0.0, muted: false }]).is_none());
+    }
+
+    /// A throwaway folder for one test, under the system temp folder.
+    fn temp_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("bt-{name}-{}-{}", std::process::id(), util::now_ms()));
+        std::fs::create_dir_all(&d).unwrap();
+        d
+    }
+
+    /// An export's two-pass logs (several MB each) go when it ends, however it ends: before, a cancelled or failed
+    /// export left them in the cache for good. Another export's logs stay.
+    #[test]
+    fn pass_logs_are_deleted_when_the_export_ends() {
+        let dir = temp_dir("passlog");
+        let prefix = dir.join("job1").to_string_lossy().into_owned();
+        for suffix in PASSLOG_SUFFIXES {
+            std::fs::write(format!("{prefix}{suffix}"), b"x").unwrap();
+        }
+        let other = dir.join("job2-0.log");
+        std::fs::write(&other, b"x").unwrap();
+        // Ended early, e.g. cancelled in pass 1, which writes only some of them.
+        let early = dir.join("job3").to_string_lossy().into_owned();
+        std::fs::write(format!("{early}-0.log.temp"), b"x").unwrap();
+        // Like export's encode step, returning early with an error.
+        fn cancelled(prefixes: [&str; 2]) -> Result<(), String> {
+            let _logs = prefixes.map(|p| PassLogs(p.to_string()));
+            Err("cancelled".into())
+        }
+        assert!(cancelled([&prefix, &early]).is_err());
+        for suffix in PASSLOG_SUFFIXES {
+            assert!(!Path::new(&format!("{prefix}{suffix}")).exists(), "{suffix} left behind");
+        }
+        assert!(!Path::new(&format!("{early}-0.log.temp")).exists());
+        assert!(other.exists(), "another export's log was deleted");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Two-pass logs left by older versions or a crash are deleted at startup once they're old; a running export's
+    /// fresh ones are kept.
+    #[test]
+    fn stale_pass_logs_are_cleaned_and_fresh_ones_kept() {
+        let dir = temp_dir("stale");
+        let (old, fresh) = (dir.join("job1-0.log.mbtree"), dir.join("job2-0.log"));
+        std::fs::write(&old, b"x").unwrap();
+        std::fs::write(&fresh, b"x").unwrap();
+        let two_hours_ago = std::time::SystemTime::now() - std::time::Duration::from_secs(7200);
+        std::fs::File::options().write(true).open(&old).unwrap().set_modified(two_hours_ago).unwrap();
+        remove_stale(&dir, 3600);
+        assert!(!old.exists(), "a two-hour-old log was kept");
+        assert!(fresh.exists(), "a fresh log was deleted");
+        remove_stale(&dir.join("missing"), 3600); // no folder yet: nothing to do
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

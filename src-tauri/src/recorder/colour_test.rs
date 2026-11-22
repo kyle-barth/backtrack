@@ -119,7 +119,7 @@ fn record_swatches(tools: &Tools, encoder: &str, gfx: bool, monitor: u32, native
     let (src, rest) = video_pipeline(encoder, gfx, monitor, 60, (w, h), (w, h) != native);
     // Like the recorder: MPEG-TS out of ffmpeg, then a saved clip is a stream copy of that into MP4.
     let ts = out.with_extension("ts");
-    let rec = tools.ffmpeg_cmd().args(["-v", "error", "-y", "-f", "lavfi", "-i"]).arg(&src).args(&rest).args(["-b:v", "20M", "-t", "2", "-f", "mpegts"]).arg(&ts).output().unwrap();
+    let rec = tools.recorder_cmd().args(["-v", "error", "-y", "-f", "lavfi", "-i"]).arg(&src).args(&rest).args(["-b:v", "20M", "-t", "2", "-f", "mpegts"]).arg(&ts).output().unwrap();
     if !rec.status.success() {
         return Err(format!("recording failed: {}", String::from_utf8_lossy(&rec.stderr).lines().next().unwrap_or("")));
     }

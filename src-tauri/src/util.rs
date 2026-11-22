@@ -60,6 +60,10 @@ pub fn log(level: &str, msg: &str) {
     if cfg!(debug_assertions) {
         eprint!("{line}");
     }
+    // Unit tests don't write to the user's own log.
+    if cfg!(test) {
+        return;
+    }
     let path = data_dir().join("backtrack.log");
     // Keep the log from growing without bound.
     if let Ok(meta) = std::fs::metadata(&path) {

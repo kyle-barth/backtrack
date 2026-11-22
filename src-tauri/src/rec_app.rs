@@ -6,8 +6,8 @@ use crate::settings::{Hotkeys, RecorderSettings};
 use crate::{util, winutil, AppState, FFMPEG_MISSING};
 use serde::Serialize;
 use std::path::PathBuf;
-use std::sync::atomic::Ordering;
-use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tauri::menu::{CheckMenuItem, Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::{MouseButton, MouseButtonState, TrayIconBuilder, TrayIconEvent};
@@ -62,23 +62,49 @@ fn monitor_size(app: &AppHandle, index: u32) -> (u32, u32) {
 
 // ------------------------------------------------------------------ status + tray
 
+/// Whether the main window's page can be seen (see page_visible).
+static PAGE_VISIBLE: AtomicBool = AtomicBool::new(false);
+
 fn emit_status(app: &AppHandle) {
+    // The tray's check mark and tooltip only change with the state. Each update is a round trip to the main thread
+    // and a message to Explorer, so they're only sent when they change, not twice a second.
+    static TRAY: Mutex<Option<(bool, String)>> = Mutex::new(None);
     let st = app.state::<Arc<AppState>>();
     let status = st.recorder.status();
-    let on = status.state == "on" || status.state == "starting";
-    if let Some(item) = st.tray_toggle.lock().unwrap().as_ref() {
-        let _ = item.set_checked(on);
+    let (on, tip) = tray_state(&status);
+    let mut last = TRAY.lock().unwrap();
+    if tray_changed(&mut last, &(on, tip.clone())) {
+        if let Some(item) = st.tray_toggle.lock().unwrap().as_ref() {
+            let _ = item.set_checked(on);
+        }
+        if let Some(tray) = app.tray_by_id("main") {
+            let _ = tray.set_tooltip(Some(tip));
+        }
     }
-    if let Some(tray) = app.tray_by_id("main") {
-        let tip = match status.state.as_str() {
-            "on" => format!("Backtrack · replay buffer on (last {} s)", status.buffer_secs),
-            "starting" => "Backtrack · starting the replay buffer".into(),
-            "error" => format!("Backtrack · {}", status.error.clone().unwrap_or_default()),
-            _ => "Backtrack · replay buffer off".into(),
-        };
-        let _ = tray.set_tooltip(Some(tip));
-    }
+    drop(last);
     let _ = app.emit("recorder-status", status);
+}
+
+/// The tray's check mark and tooltip for a status. Only the state, the buffer length and an error go in, never the
+/// live meters, so it changes with the state rather than on every tick.
+fn tray_state(status: &RecorderStatus) -> (bool, String) {
+    let on = status.state == "on" || status.state == "starting";
+    let tip = match status.state.as_str() {
+        "on" => format!("Backtrack · replay buffer on (last {} s)", status.buffer_secs),
+        "starting" => "Backtrack · starting the replay buffer".into(),
+        "error" => format!("Backtrack · {}", status.error.clone().unwrap_or_default()),
+        _ => "Backtrack · replay buffer off".into(),
+    };
+    (on, tip)
+}
+
+/// Whether the tray needs updating to show `now` (it differs from `last`, what it shows), remembering it if so.
+fn tray_changed(last: &mut Option<(bool, String)>, now: &(bool, String)) -> bool {
+    if last.as_ref() == Some(now) {
+        return false;
+    }
+    *last = Some(now.clone());
+    true
 }
 
 fn on_change_fn(app: &AppHandle) -> Arc<dyn Fn() + Send + Sync> {
@@ -86,15 +112,17 @@ fn on_change_fn(app: &AppHandle) -> Arc<dyn Fn() + Send + Sync> {
     Arc::new(move || emit_status(&app))
 }
 
-/// Pushes status to the UI twice a second while the buffer runs (live meters), and keeps the
-/// "which game would a clip be named after" guess fresh.
+/// Pushes status to the UI twice a second while the buffer runs and the page can be seen (live meters), and keeps
+/// the "which game would a clip be named after" guess, shown in the UI, fresh. In the tray (most of the time, behind
+/// a game) it does nothing: changes of state still reach the page and tray through on_change, and the page gets a
+/// fresh status as soon as it's shown (page_visible). Saving works out the game itself.
 pub fn status_pump(app: AppHandle) {
     std::thread::spawn(move || {
         let mut tick = 0u64;
         loop {
             std::thread::sleep(Duration::from_millis(500));
             let st = app.state::<Arc<AppState>>();
-            if !st.recorder.is_running() {
+            if !st.recorder.is_running() || !PAGE_VISIBLE.load(Ordering::SeqCst) {
                 continue;
             }
             if tick % 4 == 0 {
@@ -149,6 +177,10 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
 pub fn page_visible(w: &tauri::WebviewWindow, visible: bool) {
     let page: &tauri::Webview = w.as_ref();
     let _ = if visible { page.show() } else { page.hide() };
+    if !PAGE_VISIBLE.swap(visible, Ordering::SeqCst) && visible {
+        // The status pump skips a hidden page: bring it up to date.
+        emit_status(w.app_handle());
+    }
 }
 
 pub fn show_main(app: &AppHandle) {
@@ -164,8 +196,11 @@ pub fn show_main(app: &AppHandle) {
 
 /// Small always-on-top, click-through, non-activating pop-up in the top-right of the main monitor. Shown on top of
 /// borderless games, but never on top of one running exclusive full screen (it would minimize): then it goes on
-/// another monitor, or isn't shown.
+/// another monitor, or isn't shown. One window is made the first time and reused: building a WebView2 window for
+/// each pop-up, mid-game, cost far more than showing a hidden one.
 pub fn toast(app: &AppHandle, title: &str, sub: &str, kind: &str) {
+    static SHOWN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    static MAKING: Mutex<()> = Mutex::new(());
     let app = app.clone();
     let data = serde_json::json!({ "title": title, "sub": sub, "kind": kind }).to_string();
     let title = title.to_string();
@@ -178,43 +213,65 @@ pub fn toast(app: &AppHandle, title: &str, sub: &str, kind: &str) {
             Some(m) if free(&m) => Some(m),
             _ => app.available_monitors().unwrap_or_default().into_iter().find(|m| free(m)),
         };
-        let (x, y) = match monitor {
+        // (logical position for building the window, physical for moving it)
+        let ((x, y), (px, py)) = match monitor {
             Some(m) => {
                 let sf = m.scale_factor();
                 let pos = m.position().to_logical::<f64>(sf);
                 let size = m.size().to_logical::<f64>(sf);
-                (pos.x + size.width - w - 20.0, pos.y + 20.0)
+                let (mp, ms) = (m.position(), m.size());
+                ((pos.x + size.width - w - 20.0, pos.y + 20.0), (mp.x + ms.width as i32 - ((w + 20.0) * sf) as i32, mp.y + (20.0 * sf) as i32))
             }
             None if busy.is_some() => {
                 util::log("info", &format!("pop-up not shown, a full-screen app is in front: {title}"));
                 return;
             }
-            None => (40.0, 40.0),
+            None => ((40.0, 40.0), (40, 40)),
         };
-        let label = format!("toast{}", util::now_ms());
-        let built = WebviewWindowBuilder::new(&app, &label, WebviewUrl::App("toast.html".into()))
-            .initialization_script(format!("window.__TOAST = {data};"))
-            .title("Backtrack")
-            .inner_size(w, h)
-            .position(x, y)
-            .decorations(false)
-            .transparent(true)
-            .always_on_top(true)
-            .skip_taskbar(true)
-            .resizable(false)
-            .shadow(false)
-            .focused(false)
-            .focusable(false)
-            .build();
-        match built {
-            Ok(win) => {
-                if let Ok(h) = win.hwnd() {
-                    winutil::click_through(h.0);
+        let shown = SHOWN.fetch_add(1, Ordering::SeqCst) + 1;
+        let hwnd = {
+            let _making = MAKING.lock().unwrap();
+            match app.get_webview_window("toast") {
+                Some(win) => {
+                    // New text, animations restarted; a moment to draw it, then show it where it belongs now.
+                    let _ = win.eval(format!("show({data})"));
+                    std::thread::sleep(Duration::from_millis(50));
+                    let Ok(h) = win.hwnd() else { return };
+                    winutil::show_no_activate(h.0, px, py);
+                    h.0 as isize
                 }
-                std::thread::sleep(Duration::from_millis(3400));
-                let _ = win.close();
+                None => {
+                    let built = WebviewWindowBuilder::new(&app, "toast", WebviewUrl::App("toast.html".into()))
+                        .initialization_script(format!("window.__TOAST = {data};"))
+                        .title("Backtrack")
+                        .inner_size(w, h)
+                        .position(x, y)
+                        .decorations(false)
+                        .transparent(true)
+                        .always_on_top(true)
+                        .skip_taskbar(true)
+                        .resizable(false)
+                        .shadow(false)
+                        .focused(false)
+                        .focusable(false)
+                        .build();
+                    match built.map(|win| win.hwnd()) {
+                        Ok(Ok(h)) => {
+                            winutil::click_through(h.0);
+                            h.0 as isize
+                        }
+                        Ok(Err(e)) | Err(e) => {
+                            util::log("warn", &format!("toast: {e}"));
+                            return;
+                        }
+                    }
+                }
             }
-            Err(e) => util::log("warn", &format!("toast: {e}")),
+        };
+        std::thread::sleep(Duration::from_millis(3400));
+        // Hidden until the next one, unless a newer pop-up is showing in it.
+        if SHOWN.load(Ordering::SeqCst) == shown {
+            winutil::hide(hwnd as *mut core::ffi::c_void);
         }
     });
 }
@@ -468,5 +525,46 @@ pub fn suspend_hotkeys(app: AppHandle, suspended: bool) {
         let _ = app.global_shortcut().unregister_all();
     } else {
         register_hotkeys(&app);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::recorder::TrackStatus;
+
+    fn status(state: &str, filled: f64, level: f32) -> RecorderStatus {
+        RecorderStatus {
+            state: state.into(), error: None, buffer_secs: 120, filled_secs: filled, memory_mb: filled * 3.0,
+            encoder: "AMD AMF".into(), width: 1920, height: 1080, fps: 60, game: Some("Rocket League".into()),
+            mic_muted: false,
+            tracks: vec![TrackStatus { name: "Game".into(), source: "Game".into(), level, active: true }],
+            hotkeys: vec![], last_saved: None,
+        }
+    }
+
+    /// The status goes out twice a second while recording, but the tray's check mark and tooltip only change with the
+    /// state: each update is a round trip to the main thread and a message to Explorer, so they're sent only then.
+    #[test]
+    fn tray_is_only_updated_when_its_text_or_check_changes() {
+        let mut last = None;
+        let on = tray_state(&status("on", 10.0, 0.2));
+        assert!(tray_changed(&mut last, &on), "first status");
+        // Ticks of the live meters (buffer filling, levels, memory) leave the tray alone.
+        for i in 0..10 {
+            let tick = tray_state(&status("on", 10.5 + i as f64, (i as f32) / 10.0));
+            assert!(!tray_changed(&mut last, &tick), "tick {i} updated the tray: {tick:?}");
+        }
+        assert_eq!(on, (true, "Backtrack · replay buffer on (last 120 s)".to_string()));
+        let off = tray_state(&status("off", 0.0, 0.0));
+        assert_eq!(off, (false, "Backtrack · replay buffer off".to_string()));
+        assert!(tray_changed(&mut last, &off), "turned off");
+        assert!(!tray_changed(&mut last, &off));
+        assert!(tray_state(&status("starting", 0.0, 0.0)).0, "starting shows as on");
+        let mut failed = status("error", 0.0, 0.0);
+        failed.error = Some("ffmpeg stopped".into());
+        let err = tray_state(&failed);
+        assert_eq!(err, (false, "Backtrack · ffmpeg stopped".to_string()));
+        assert!(tray_changed(&mut last, &err), "a new error");
     }
 }

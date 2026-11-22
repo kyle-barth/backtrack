@@ -76,11 +76,17 @@ The plain `cargo build` doesn't need FFmpeg staged: the bundle settings only app
 ## Tests
 
 ```powershell
-cargo test                             # unit tests: export ladder, audio mix graph, date and keyframe parsing
+cargo test                             # unit tests: export ladder, audio mix graph, date and keyframe parsing, performance guards
 cargo test -- --ignored --nocapture    # end to end on the clips in your own library: scan, waveform, two 10 MB exports
 cargo test colour -- --ignored --nocapture   # recorded colours match the screen (covers a monitor for ~10 s)
 cargo test frame_rate -- --ignored --nocapture --test-threads=1   # recordings don't drop frames (covers a monitor for ~2 min)
 ```
+
+Some unit tests guard against costs that once came back unnoticed. They need no GPU, screen or running app:
+- `ui_test.rs` reads the pages' CSS. No animation repeats forever, except on the short-lived states listed with a reason in `FOREVER_OK` (loading spinners and the like), because while any CSS animation runs, WebView2 draws the page at the monitor's refresh rate. The recording dot has no CSS animation or transition: it pulses from a 10 Hz timer in `app.js`. The corner pop-up animates for at most 0.5 s at a time.
+- Helper ffmpeg and ffprobe processes start below normal priority, and only the recorder starts at normal priority (`ffmpeg.rs`; the test starts cmd.exe with each builder's flags). Thumbnails decode, scale and encode on one thread each (`media.rs`).
+- Windows Graphics Capture asks for frames at 4× the clip's rate, and `fps` drops the extra frames before `hwdownload` (`recorder.rs`).
+- The tray is updated only when its tooltip or check mark changes (`rec_app.rs`). index.json is rewritten only when the index changed, and a new thumbnail updates just its own clip (`library.rs`). Two-pass logs are deleted when an export ends, and stale ones at startup (`export.rs`).
 
 The colour and frame-rate tests draw on a monitor, so close Backtrack first (a second capture of the same monitor skews the frame-rate results) and run them one at a time. `BACKTRACK_TEST_MONITOR` picks the monitor (default 0).
 

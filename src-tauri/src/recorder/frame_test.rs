@@ -203,7 +203,7 @@ fn record(tools: &Tools, src: &str, rest: &[String], (w, mon_w): (u32, u32), sec
     let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_secs_f64();
     let started = Instant::now();
     let rec = tools
-        .ffmpeg_cmd()
+        .recorder_cmd()
         .args(["-v", "error", "-y", "-thread_queue_size", "64", "-use_wallclock_as_timestamps", "1", "-itsoffset"])
         .arg(format!("-{now:.6}"))
         .args(["-f", "lavfi", "-i", src])
