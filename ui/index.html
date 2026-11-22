@@ -144,6 +144,9 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .tb-left{display:flex;align-items:center;gap:10px;padding-left:12px;min-width:0}
 .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;letter-spacing:.01em}
 .brand svg{width:20px;height:20px}
+/* inline after the name, so the two share a text baseline (centred on its own, the smaller text sits 1px high) */
+.brand .ver{margin-left:6px;font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--text-3);font-variant-numeric:tabular-nums}
+.brand .ver:empty{display:none}
 .crumb{display:flex;align-items:center;gap:8px;color:var(--text-3);font-size:12.5px;white-space:nowrap}
 .crumb::before{content:"";width:1px;height:14px;background:var(--line-2)}
 .tb-right{display:flex;justify-content:flex-end;align-items:center;height:100%}
@@ -1223,7 +1226,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
        non-interactive children (never on buttons); app.js covers any other child with startDragging() -->
   <header class="titlebar" id="titlebar" data-tauri-drag-region>
     <div class="tb-left" data-tauri-drag-region>
-      <div class="brand" data-tauri-drag-region><svg data-tauri-drag-region><use href="#logo"/></svg>Backtrack</div>
+      <div class="brand" data-tauri-drag-region><svg data-tauri-drag-region><use href="#logo"/></svg><span data-tauri-drag-region>Backtrack<span class="ver" id="appVer" data-tauri-drag-region></span></span></div>
       <div class="crumb" id="crumb" data-tauri-drag-region></div>
     </div>
     <!-- replay buffer state from recorder-status (app.js renderPill) -->

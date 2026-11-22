@@ -2285,7 +2285,7 @@ document.addEventListener('visibilitychange',()=>{
   renderRecorder();
   if(libDirty){libDirty=false;refetch();}
 });
-BT.appVersion().then(v=>{S.version=v||'';if(cur().startsWith('settings'))renderSettings();}).catch(()=>{});
+BT.appVersion().then(v=>{S.version=v||'';$('#appVer').textContent=S.version?'v'+S.version:'';if(cur().startsWith('settings'))renderSettings();}).catch(()=>{});
 
 renderSide();
 loadAll();
