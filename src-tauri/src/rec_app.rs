@@ -142,8 +142,18 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// Tell WebView2 whether the main window's page can be seen. Tauri hides and minimizes the window without telling it,
+/// and the page then goes on drawing at the monitor's refresh rate (with an animation running, a fifth of a GPU, all
+/// the time Backtrack sits in the tray behind a game). A hidden page doesn't draw and its timers slow down; its
+/// scripts and events still run, so edits still save.
+pub fn page_visible(w: &tauri::WebviewWindow, visible: bool) {
+    let page: &tauri::Webview = w.as_ref();
+    let _ = if visible { page.show() } else { page.hide() };
+}
+
 pub fn show_main(app: &AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
+        page_visible(&w, true);
         let _ = w.unminimize();
         let _ = w.show();
         let _ = w.set_focus();

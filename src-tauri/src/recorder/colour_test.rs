@@ -28,7 +28,7 @@ const SWATCHES: [[u8; 3]; 3] = [[230, 120, 30], [40, 110, 220], [200, 150, 120]]
 /// Largest difference allowed per channel, and for the warmth (red minus blue), after H.264 4:2:0.
 const TOLERANCE: i32 = 12;
 
-fn monitors() -> Vec<(isize, RECT)> {
+pub(super) fn monitors() -> Vec<(isize, RECT)> {
     unsafe extern "system" fn add(m: HMONITOR, _: HDC, r: *mut RECT, list: LPARAM) -> BOOL {
         unsafe { (*(list.0 as *mut Vec<(isize, RECT)>)).push((m.0 as isize, *r)) };
         BOOL(1)
@@ -40,7 +40,7 @@ fn monitors() -> Vec<(isize, RECT)> {
     list
 }
 
-unsafe extern "system" fn wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
+pub(super) unsafe extern "system" fn wndproc(h: HWND, m: u32, w: WPARAM, l: LPARAM) -> LRESULT {
     unsafe { DefWindowProcW(h, m, w, l) }
 }
 

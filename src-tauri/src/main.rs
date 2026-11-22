@@ -23,7 +23,7 @@ use serde::Serialize;
 use settings::Settings;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
@@ -589,6 +589,16 @@ fn main() {
         )
         .manage(state.clone())
         .on_window_event(|window, event| {
+            // Minimized or back: the page stops or starts drawing (rec_app::page_visible).
+            if let tauri::WindowEvent::Resized(_) = event {
+                static MINIMIZED: AtomicBool = AtomicBool::new(false);
+                let minimized = window.is_minimized().unwrap_or(false);
+                if window.label() == "main" && MINIMIZED.swap(minimized, Ordering::SeqCst) != minimized && window.is_visible().unwrap_or(false) {
+                    if let Some(w) = window.app_handle().get_webview_window("main") {
+                        rec_app::page_visible(&w, !minimized);
+                    }
+                }
+            }
             // Closing the main window while the buffer runs keeps Backtrack recording in the tray.
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
                 if window.label() == "main" {
@@ -597,6 +607,9 @@ fn main() {
                     if st.recorder.is_running() {
                         api.prevent_close();
                         let _ = window.hide();
+                        if let Some(w) = app.get_webview_window("main") {
+                            rec_app::page_visible(&w, false);
+                        }
                         if !st.told_tray.swap(true, Ordering::SeqCst) {
                             rec_app::toast(app, "Still recording in the tray", "Right-click the tray icon to quit", "info");
                         }
@@ -624,7 +637,8 @@ fn main() {
                         let _ = win.maximize();
                     }
                 }
-                // Started with Windows: stay in the tray.
+                // Started with Windows: stay in the tray, with the page not drawing until it's opened.
+                rec_app::page_visible(&win, !background);
                 if !background {
                     let _ = win.show();
                 }

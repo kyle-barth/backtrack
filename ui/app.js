@@ -2091,6 +2091,10 @@ BT.on('clip-saved',p=>{
   toast(`Clip saved · ${p.game||'Clip'} · ${Math.round(+p.duration||0)} s`,'check-c',{label:'Open',icon:'play',fn:()=>openSavedClip(p.path)});
 });
 BT.on('recorder-status',applyStatus);
+/* Animations that never end (the recording dot's pulse) stop while Backtrack doesn't have focus, which is most of the
+   time: behind a game, in the tray. An animation makes the page draw at the monitor's refresh rate. */
+const markIdle=()=>document.documentElement.classList.toggle('idle',!document.hasFocus());
+addEventListener('focus',markIdle);addEventListener('blur',markIdle);markIdle();
 
 /* ================================================================== TITLE BAR */
 const winCall=(f,what)=>f().catch(e=>BT.log('warn',`window ${what} failed: ${errMsg(e)}`));

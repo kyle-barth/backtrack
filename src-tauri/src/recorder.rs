@@ -224,12 +224,18 @@ pub(crate) fn video_pipeline(encoder: &str, gfx: bool, monitor: u32, fps: u32, (
         // create (DirectX error 18), so they can't go to the encoder on the GPU.
         // From RGB, AMF encodes full-range BT.709 but doesn't say so in the stream, and a saved clip is a copy of
         // the stream, so players would take it as limited range (too dark, too contrasty): h264_metadata says so.
+        //
+        // Windows hands over a new frame at most every 1/max_framerate s. At exactly the clip's rate, a frame that
+        // comes a little early (as they do from a game with vsync off, or one keeping the GPU busy) is held back
+        // until the next one, so v0.4.0's clips repeated up to a third of their frames and stuttered (frame_test).
+        // So Windows may deliver up to 4× as often, and fps keeps one frame for each of the clip's slots before
+        // anything leaves the GPU.
         "amf" if gfx => {
             let size = if scaled { format!(":width={w}:height={h}") } else { String::new() };
-            let mut rest = args(&["-vf", "hwdownload,format=bgra,setparams=color_trc=bt709:colorspace=bt709"]);
+            let mut rest = vec!["-vf".to_string(), format!("fps={fps},hwdownload,format=bgra,setparams=color_trc=bt709:colorspace=bt709")];
             rest.extend(args(&["-c:v", "h264_amf", "-quality", "balanced", "-rc", "vbr_peak"]));
             rest.extend(args(&["-bsf:v", "h264_metadata=video_full_range_flag=1:colour_primaries=1:transfer_characteristics=1:matrix_coefficients=1"]));
-            (format!("gfxcapture=monitor_idx={monitor}:max_framerate={fps}:capture_cursor=0:resize_mode=scale{size},settb=AVTB"), rest)
+            (format!("gfxcapture=monitor_idx={monitor}:max_framerate={}:capture_cursor=0:resize_mode=scale{size},settb=AVTB", fps * 4), rest)
         }
         // Older ffmpeg without gfxcapture.
         "amf" => {
@@ -642,6 +648,8 @@ impl Recorder {
 
 #[cfg(test)]
 mod colour_test;
+#[cfg(test)]
+mod frame_test;
 
 #[cfg(test)]
 mod tests {

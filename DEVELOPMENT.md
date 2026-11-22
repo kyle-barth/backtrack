@@ -79,9 +79,14 @@ The plain `cargo build` doesn't need FFmpeg staged: the bundle settings only app
 cargo test                             # unit tests: export ladder, audio mix graph, date and keyframe parsing
 cargo test -- --ignored --nocapture    # end to end on the clips in your own library: scan, waveform, two 10 MB exports
 cargo test colour -- --ignored --nocapture   # recorded colours match the screen (covers a monitor for ~10 s)
+cargo test frame_rate -- --ignored --nocapture --test-threads=1   # recordings don't drop frames (covers a monitor for ~2 min)
 ```
 
-The colour test fills a monitor with colour swatches through a game-like swap chain (RGBA, then BGRA), records it with the recorder's own pipeline, saves it the way a clip is saved, and checks each swatch's colour and warmth (red minus blue). Set `BACKTRACK_TEST_MONITOR` to pick the monitor (default 0), and `BACKTRACK_TEST_CAPTURE=vsrc_amf` to try AMD's old capture, which fails it.
+The colour and frame-rate tests draw on a monitor, so close Backtrack first (a second capture of the same monitor skews the frame-rate results) and run them one at a time. `BACKTRACK_TEST_MONITOR` picks the monitor (default 0).
+
+The colour test fills a monitor with colour swatches through a game-like swap chain (RGBA, then BGRA), records it with the recorder's own pipeline, saves it the way a clip is saved, and checks each swatch's colour and warmth (red minus blue). Set `BACKTRACK_TEST_CAPTURE=vsrc_amf` to try AMD's old capture, which fails it.
+
+The frame-rate tests cover a monitor with a frame counter that changes on every frame the window presents: with vsync at fractions of the refresh rate, without vsync at 144, 100 and 75 fps, and (`frame_rate_under_gpu_load`) as fast as it can while keeping the GPU busy like a demanding game (`BACKTRACK_TEST_LOAD=<copies a frame>`, default 12). Each recording is decoded and its repeated frames (visible hitches) are compared with the ones it couldn't avoid: 60 fps slots in which the window presented nothing new. v0.4.0's pipeline is recorded alongside for comparison: it let Windows hand over frames only at the clip's rate, held back any that came a little early, and repeated up to a third of frames from games with vsync off.
 
 To drive a running app from a script, start it with `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'`. Then use `tools/cdp.ps1 -Eval "<js>"` or `-Shot out.png`.
 

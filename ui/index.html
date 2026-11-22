@@ -163,8 +163,16 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .buffer-pill b{color:var(--text-1);font-weight:600}
 .buffer-pill kbd{height:18px;min-width:18px;font-size:10.5px;background:var(--bg-4)}
 .buffer-pill .kb{display:flex;gap:3px;padding-left:6px;border-left:1px solid var(--line-2)}
-.rec-dot{width:8px;height:8px;border-radius:50%;background:var(--rec);flex:none;box-shadow:0 0 0 3px rgba(255,61,85,.2);animation:pulse 2.4s ease-in-out infinite}
-@keyframes pulse{50%{box-shadow:0 0 0 5px rgba(255,61,85,.05)}}
+/* The recording dot's ring pulses only while Backtrack has focus (html.idle otherwise: behind a game, in the tray,
+   minimized). A smooth animation makes the page draw at the monitor's refresh rate, 360 times a second on a 360 Hz
+   screen: as a box-shadow it took a fifth of the GPU, even in the tray. So the ring scales and fades a layer (no
+   repainting) in 10 steps a second, too small to see as steps: ~0.2% of the GPU while focused, nothing otherwise.
+   The ring is the dot's own red, so drawing it over the dot changes nothing. */
+.rec-dot{position:relative;width:8px;height:8px;border-radius:50%;background:var(--rec);flex:none}
+.rec-dot::after{content:"";position:absolute;inset:-3px;border-radius:50%;background:rgba(255,61,85,.2);animation:pulse 2.4s steps(12,jump-none) infinite}
+@keyframes pulse{50%{transform:scale(1.286);opacity:.25}}
+html.idle .rec-dot::after{animation:none}
+.rec-dot.off::after,.buf-off .rec-dot::after,.buf-pill-off .rec-dot::after,.rec-dot.warn::after,.rec-dot.starting::after{content:none}
 .rec-dot.off,.buf-off .rec-dot{background:var(--text-3);box-shadow:0 0 0 3px rgba(141,150,165,.18);animation:none}
 .screen{min-height:0;min-width:0;height:100%}
 
