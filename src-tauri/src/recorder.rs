@@ -358,8 +358,9 @@ impl Recorder {
             self.mic_muted.clone(),
             id,
         );
-        let t0 = Instant::now();
-        let t0_wall = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
+        // One clock for every track: the wall clock (see audio::frames_due).
+        let t0 = SystemTime::now();
+        let t0_wall = t0.duration_since(UNIX_EPOCH).map(|d| d.as_secs_f64()).unwrap_or(0.0);
         audio.start(t0)?;
 
         // ---- ffmpeg command
@@ -373,7 +374,7 @@ impl Recorder {
             args.extend(["-ac", "2", "-probesize", "32", "-analyzeduration", "0", "-thread_queue_size", "4096", "-i"].map(s));
             args.push(name.clone());
         }
-        // Video gets wall-clock timestamps on the same timeline as the audio clocks (audio sample 0 = t0).
+        // Video gets wall-clock timestamps on the same timeline and clock as the audio (audio sample 0 = t0).
         args.extend(["-thread_queue_size", "64", "-use_wallclock_as_timestamps", "1", "-itsoffset"].map(s));
         args.push(format!("-{t0_wall:.6}"));
         args.extend(["-f", "lavfi", "-i"].map(s));

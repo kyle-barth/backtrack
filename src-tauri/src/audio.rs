@@ -1,7 +1,7 @@
 //! The replay buffer's three audio tracks, captured with WASAPI and streamed to ffmpeg over named pipes as
-//! 48 kHz stereo f32. Each track is clocked by wall time from a shared start instant, so the tracks stay
-//! aligned with the video and with each other. When a source has nothing to play (loopback sends no data
-//! while silent), the gap is filled with silence.
+//! 48 kHz stereo f32. Each track is paced by the wall clock from a shared start time, the clock ffmpeg stamps
+//! the video with, so the tracks stay aligned with the video and with each other (see [`frames_due`]). When a
+//! source has nothing to play (loopback sends no data while silent), the gap is filled with silence.
 //!
 //! - Game:       per-process loopback in EXCLUDE mode: everything the PC plays except the chat app.
 //! - Voice chat: per-process loopback in INCLUDE mode on the chat app's process tree (Discord).
@@ -14,7 +14,7 @@ use std::io::Write;
 use std::os::windows::io::{AsRawHandle, FromRawHandle};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 use wasapi::{AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode, WaveFormat};
 use windows_sys::Win32::Foundation::{CloseHandle, GetLastError, ERROR_PIPE_CONNECTED, GENERIC_READ, INVALID_HANDLE_VALUE};
 use windows_sys::Win32::Storage::FileSystem::{CreateFileW, OPEN_EXISTING, PIPE_ACCESS_OUTBOUND};
@@ -27,6 +27,29 @@ use windows_sys::Win32::System::Pipes::{
 
 pub const RATE: usize = 48_000;
 const FRAME_BYTES: usize = 8; // f32 × 2 channels
+/// Most silence added in one write (0.5 s), so a jump of the clock is caught up in steps.
+const MAX_PAD: usize = RATE / 2;
+
+/// Audio frames due at `now` for tracks started at `t0`.
+///
+/// The video's timestamps come from the wall clock (ffmpeg's -use_wallclock_as_timestamps), so the audio is
+/// paced by the same clock. Paced by a monotonic clock (as up to v0.4.2), the two drifted apart as Windows'
+/// time sync adjusted the wall clock (2.2 s in 43 hours on one PC). ffmpeg holds a stream back while it's more
+/// than 100 ms ahead of the others, so after an hour or two of recording it held the video back, Windows
+/// dropped the frames it couldn't hand over, and clips repeated up to 42% of their frames.
+pub(crate) fn frames_due(t0: SystemTime, now: SystemTime) -> u64 {
+    now.duration_since(t0).map(|d| (d.as_secs_f64() * RATE as f64) as u64).unwrap_or(0)
+}
+
+/// Silence to add when the source has only `take` of the `need` frames due: none within `jitter`, then at most
+/// [`MAX_PAD`] a write (the clock jumping forward makes `need` hours long).
+fn pad_frames(need: usize, take: usize, jitter: usize) -> usize {
+    if need - take > jitter {
+        (need - take - jitter / 2).min(MAX_PAD)
+    } else {
+        0
+    }
+}
 
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum Source {
@@ -280,8 +303,8 @@ impl Audio {
     }
 
     /// Create the pipes and start one capture thread per track, plus a watcher for source changes.
-    /// Returns the pipe paths for ffmpeg's inputs. All tracks are clocked from `t0`.
-    pub fn start(self: &Arc<Self>, t0: Instant) -> Result<(), String> {
+    /// Returns the pipe paths for ffmpeg's inputs. All tracks are clocked from `t0` (see [`frames_due`]).
+    pub fn start(self: &Arc<Self>, t0: SystemTime) -> Result<(), String> {
         let _ = wasapi::initialize_mta();
         *self.mic_default_id.lock().unwrap() = default_mic_id();
         self.describe();
@@ -334,7 +357,7 @@ impl Audio {
         }
     }
 
-    fn run_track(self: Arc<Self>, idx: usize, mut pipe: File, t0: Instant) {
+    fn run_track(self: Arc<Self>, idx: usize, mut pipe: File, t0: SystemTime) {
         let _ = wasapi::initialize_mta();
         let track = &self.tracks[idx];
         if let Err(e) = connect_pipe(&pipe) {
@@ -391,10 +414,15 @@ impl Audio {
                 None => std::thread::sleep(Duration::from_millis(10)),
             }
 
-            // Write exactly as many frames as wall time says are due.
-            let due = (t0.elapsed().as_secs_f64() * RATE as f64) as u64;
+            // Write exactly as many frames as the wall clock says are due.
+            let due = frames_due(t0, SystemTime::now());
             let need = due.saturating_sub(written) as usize;
             if need == 0 {
+                // Nothing due for a while only if the clock went back: keep at most a second of what came in.
+                let max = RATE * FRAME_BYTES;
+                if queue.len() > max {
+                    queue.drain(..queue.len() - max);
+                }
                 continue;
             }
             let avail = queue.len() / FRAME_BYTES;
@@ -405,7 +433,7 @@ impl Audio {
             }
             let avail = queue.len() / FRAME_BYTES;
             let take = avail.min(need);
-            let pad = if need - take > jitter { need - take - jitter / 2 } else { 0 };
+            let pad = pad_frames(need, take, jitter);
             if take + pad == 0 {
                 continue;
             }
@@ -431,5 +459,34 @@ impl Audio {
         }
         track.level.store(0f32.to_bits(), Ordering::Relaxed);
         track.active.store(false, Ordering::Relaxed);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn audio_is_paced_by_the_wall_clock_like_the_video() {
+        // The recorder stamps video with the wall clock; the audio must count its samples on that same clock,
+        // or the two drift apart over hours and ffmpeg holds the video back (clips repeat frames).
+        let t0 = SystemTime::UNIX_EPOCH + Duration::from_secs(1_795_375_747);
+        assert_eq!(frames_due(t0, t0), 0);
+        assert_eq!(frames_due(t0, t0 + Duration::from_millis(1500)), RATE as u64 * 3 / 2);
+        assert_eq!(frames_due(t0, t0 + Duration::from_secs(7200)), RATE as u64 * 7200);
+        // The clock set back before the start: nothing due, rather than a panic or a wrap-around.
+        assert_eq!(frames_due(t0, t0 - Duration::from_secs(5)), 0);
+    }
+
+    #[test]
+    fn silence_is_added_in_bounded_steps() {
+        let jitter = RATE / 25;
+        // Within the jitter allowance: wait for the source rather than pad.
+        assert_eq!(pad_frames(jitter, 0, jitter), 0);
+        assert_eq!(pad_frames(RATE / 10, RATE / 10, jitter), 0);
+        // A source that went quiet: pad what's due, less half the allowance.
+        assert_eq!(pad_frames(RATE / 10, 0, jitter), RATE / 10 - jitter / 2);
+        // The clock jumping an hour forward: half a second a write, not an hour of silence at once.
+        assert_eq!(pad_frames(RATE * 3600, 0, jitter), MAX_PAD);
     }
 }
