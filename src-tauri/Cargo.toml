@@ -23,8 +23,15 @@ clipboard-win = "5"
 trash = "5"
 open = "5"
 dirs = "5"
+# Native (OLE) file drag out of the window, e.g. an export into a Discord chat. By the Tauri team (CrabNebula).
+drag = "2"
+tauri-plugin-updater = "2"
 
 [dev-dependencies]
+# The release check that the installer's updater signature verifies against the app's public key (update.rs),
+# with the same crates the updater plugin uses.
+minisign-verify = "0.3"
+base64 = "0.22"
 # The colour test draws on screen with a D3D11 swap chain, like a game (the same crate version Tauri uses).
 windows = { version = "0.62", features = ["Win32_Foundation", "Win32_Graphics_Direct3D", "Win32_Graphics_Direct3D11", "Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_Graphics_Gdi", "Win32_System_LibraryLoader", "Win32_UI_WindowsAndMessaging"] }
 

@@ -57,6 +57,8 @@ pub struct RecorderSettings {
     pub mic_device: String,
     pub mic_enabled: bool,
     pub start_with_windows: bool,
+    /// Install a newer release from GitHub when Backtrack starts (installed copies only).
+    pub auto_update: bool,
 }
 
 impl Default for RecorderSettings {
@@ -79,6 +81,7 @@ impl Default for RecorderSettings {
             mic_device: String::new(),
             mic_enabled: true,
             start_with_windows: false,
+            auto_update: true,
         }
     }
 }
@@ -136,10 +139,7 @@ impl Default for Settings {
 impl Settings {
     pub fn load() -> Settings {
         let path = util::data_dir().join("settings.json");
-        let mut s: Settings = std::fs::read_to_string(&path)
-            .ok()
-            .and_then(|t| serde_json::from_str(&t).ok())
-            .unwrap_or_default();
+        let mut s: Settings = util::read_json_kept(&path);
         s.normalize();
         s
     }
@@ -173,5 +173,28 @@ impl Settings {
         if !self.clip_dirs.iter().any(|d| d.eq_ignore_ascii_case(&clips)) {
             self.clip_dirs.push(clips);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Settings saved by an older Backtrack keep their values after an update, and settings it didn't have yet
+    /// start at their defaults.
+    #[test]
+    fn settings_from_an_older_version_keep_their_values() {
+        let old = r#"{"clipDirs":["D:\\Clips"],"exportDir":"D:\\Exports","defaultPreset":"d50","customMb":25,
+            "autoCopy":false,"quickLen":30,"recorder":{"enabled":true,"bufferSecs":120,"resolution":1440,"fps":60,
+            "bitrateMbps":40,"encoder":"auto","monitor":1,"clipsDir":"D:\\Clips","confirm":false,"startWithWindows":true}}"#;
+        let mut s: Settings = serde_json::from_str(old).unwrap();
+        s.normalize();
+        assert_eq!((s.default_preset.as_str(), s.auto_copy, s.quick_len), ("d50", false, 30.0));
+        let r = &s.recorder;
+        assert_eq!((r.buffer_secs, r.resolution, r.bitrate_mbps, r.monitor), (120, 1440, 40, 1));
+        assert!(r.start_with_windows && !r.confirm);
+        assert!(r.auto_update, "new setting: on by default");
+        assert_eq!(r.hotkeys.save, "Alt+S", "missing hotkeys fall back to the defaults");
+        assert_eq!(s.clip_dirs, vec!["D:\\Clips".to_string()]);
     }
 }

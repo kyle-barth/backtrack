@@ -14,6 +14,26 @@ const r3=v=>Math.round(v*1000)/1000;
 const lsGet=(k,d)=>{try{const v=localStorage.getItem(k);return v==null?d:v;}catch(_){return d;}};
 const lsSet=(k,v)=>{try{localStorage.setItem(k,v);}catch(_){}};
 
+/* Tooltips are CSS (an ::after box from data-tip, see index.html). Keep them inside the window: as the pointer
+   enters an element, work out where its tip would land and shift it sideways (--tip-dx) or flip it to the other
+   side (data-tip-flip). Tips with placement rules of their own are left alone. */
+const tipRuler=document.createElement('span');
+tipRuler.setAttribute('aria-hidden','true');
+tipRuler.style.cssText='position:fixed;left:0;top:0;visibility:hidden;pointer-events:none;white-space:nowrap;padding:6px 9px;border:1px solid transparent;font:500 12px/1.2 var(--font);letter-spacing:0';
+document.body.append(tipRuler);
+function fitTip(el){
+  el.style.removeProperty('--tip-dx');el.removeAttribute('data-tip-flip');
+  if(el.matches('.sel-ck,.quick,.fail-b'))return;
+  const pos=el.dataset.tipPos||'t',r=el.getBoundingClientRect(),M=8,W=innerWidth,H=innerHeight;
+  tipRuler.textContent=el.dataset.tip;const tw=tipRuler.offsetWidth,th=tipRuler.offsetHeight;
+  if(pos==='l'){if(r.left-10-tw<M&&r.right+10+tw<=W-M)el.dataset.tipFlip='r';return;}
+  const left=r.left+r.width/2-tw/2,dx=left<M?M-left:left+tw>W-M?W-M-(left+tw):0;
+  if(dx)el.style.setProperty('--tip-dx',Math.round(dx)+'px');
+  if(pos==='b'){if(r.bottom+8+th>H-M&&r.top-8-th>=M)el.dataset.tipFlip='t';}
+  else if(r.top-8-th<M&&r.bottom+8+th<=H-M)el.dataset.tipFlip='b';
+}
+document.addEventListener('mouseover',e=>{const el=e.target.closest&&e.target.closest('[data-tip]');if(el&&!el.contains(e.relatedTarget))fitTip(el);},true);
+
 /* ================================================================== STATE */
 const S={settings:null,clips:[],byId:{},games:[],G:{},loaded:false,loadError:null,version:''};
 const NEW_MS=30*60000;                                  // "New" = recorded in the last 30 minutes
@@ -223,12 +243,23 @@ function renderStorage(){
   const dirs=S.settings?S.settings.clipDirs:[];
   $('#stFoot').innerHTML=dirs.length?`${ic('folder','xs')}<span class="nm" title="${esc(dirs.join('\n'))}">${esc(shortPath(dirs[0],30))}${dirs.length>1?` +${dirs.length-1}`:''}</span>`:`${ic('folder','xs')}<span>No clip folder set</span>`;
 }
+/* The part kept by a trim in the editor (saved In/Out), or null when the whole clip is in. */
+function trimOf(c){
+  const e=c.edits;if(!e||!(e.outT-e.inT>=.5)||e.outT-e.inT>=c.duration-.05)return null;
+  const a=clamp(e.inT,0,c.duration),b=clamp(e.outT,a,c.duration);return {a,b,len:b-a};
+}
+// duration badge on a thumbnail: the trimmed length (with scissors) once a clip is trimmed
+function durHTML(c,style=''){
+  const t=trimOf(c),st=style?` style="${style}"`:'';
+  return t?`<span class="dur trim"${st} data-tip="Trimmed to ${fmtLen(t.a)} – ${fmtLen(t.b)} of ${fmtLen(c.duration)}" data-tip-pos="b">${ic('scissors','xs')}${fmtLen(t.len)}</span>`
+    :`<span class="dur"${st}>${fmtLen(c.duration)}</span>`;
+}
 function cardHTML(c,opt={}){
   const fresh=isNewClip(c),d=new Date(c.recordedAt);
   const title=opt.showGame?c.game:whenLabel(d);
   const meta=opt.showGame?`${whenLabel(d)} · ${fmtMB(MBof(c.sizeBytes))}`:`${fmtMB(MBof(c.sizeBytes))} · ${c.height}p${fpsR(c)}`;
   return `<article class="card${fresh?' new':''}${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}" tabindex="0" aria-label="${esc(cardLbl(c))}">
-    <div class="thumb">${thumbHTML(c.thumb)}${fresh?'<span class="badge-new">New</span>':''}<span class="dur">${fmtLen(c.duration)}</span>
+    <div class="thumb">${thumbHTML(c.thumb)}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}
       <div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}
       <button class="quick" data-quick="${esc(c.id)}" data-tip="Export for Discord" aria-label="Export for Discord">${ic('upload','sm')}</button></div>
     <div class="card-body"><div class="card-text"><div class="card-title" title="${esc(title)}">${esc(title)}</div><div class="card-meta">${meta}</div></div>
@@ -259,16 +290,16 @@ function heroHTML(){
   const range=`${fmtLen(qp.inT)}–${fmtLen(qp.outT)}`;
   const sess=S.clips.slice(1,3);
   return `<section class="hero">
-    <div class="hero-thumb${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true})}${fresh?'<span class="badge-new">New</span>':''}<span class="dur">${fmtLen(c.duration)}</span><div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}</div>
+    <div class="hero-thumb${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true})}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}<div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}</div>
     <div class="hero-info">
       <div class="eyebrow" id="heroEyebrow" data-ts="${c.recordedAt}" data-fresh="${fresh?1:0}"><span class="dot"></span>${fresh?'Just saved':'Newest clip'} · ${ago(c.recordedAt)}</div>
       <h2>${esc(c.game)} — ${whenLabel(d)}</h2>
-      <div class="hero-meta"><span>${ic('clock','xs')}${fmtLen(c.duration)}</span><span>${ic('video','xs')}${qualLbl(c)}</span><span>${ic('drive','xs')}${fmtMB(MBof(c.sizeBytes))}</span><span>${ic('wave','xs')}${n} audio track${n===1?'':'s'}</span></div>
+      <div class="hero-meta"><span>${trimOf(c)?`${ic('scissors','xs')}${fmtLen(trimOf(c).len)} trimmed <em class="of">of ${fmtLen(c.duration)}</em>`:`${ic('clock','xs')}${fmtLen(c.duration)}`}</span><span>${ic('video','xs')}${qualLbl(c)}</span><span>${ic('drive','xs')}${fmtMB(MBof(c.sizeBytes))}</span><span>${ic('wave','xs')}${n} audio track${n===1?'':'s'}</span></div>
       <div class="hero-actions"><button class="btn primary lg" data-open="${esc(c.id)}">${ic('scissors')}Trim &amp; export</button><button class="btn lg two" data-send="${esc(c.id)}" data-tip="Exports ${range} (${planWhy(qp)}) for Discord right away" data-tip-pos="b">${ic('bolt')}<span class="tl"><b>Quick send · ${fmtSecs(qp.len)}</b><small>${range} · ${fmtMB(qe.size)} · ${tierLbl(qe.res,qe.fps)}</small></span></button><button class="btn lg sq" data-folder="${esc(c.id)}" data-tip="Show in folder" data-tip-pos="b" aria-label="Show in folder">${ic('folder')}</button></div>
     </div>
     <div class="hero-session">${sess.length?`<div class="cap" style="color:var(--text-3)">Recent</div>`+sess.map(s=>{
       const sub=[s.gameId!==c.gameId?esc(s.game):'',fmtMB(MBof(s.sizeBytes)),isShared(s)?'shared':''].filter(Boolean).join(' · ');
-      return `<div class="mini${sel.ids.has(s.id)?' is-sel':''}" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true})}<span class="dur" style="right:4px;bottom:4px;font-size:10.5px;padding:2px 4px">${fmtLen(s.duration)}</span></div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
+      return `<div class="mini${sel.ids.has(s.id)?' is-sel':''}" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true})}${durHTML(s,'right:4px;bottom:4px;font-size:10.5px;padding:2px 4px')}</div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
     </div></section>`;
 }
 function ffBanner(){
@@ -1038,19 +1069,22 @@ function updatePlayhead(){
   const img=$('#pvImg');img.style.transform=BT.isMock&&!vOK?`scale(${(1.04+.02*Math.sin(ed.t*.37)).toFixed(4)}) translate(${(Math.sin(ed.t*.8)*1.1).toFixed(3)}%,${(Math.cos(ed.t*.53)*.8).toFixed(3)}%)`:'';
 }
 function tAt(e){const r=els.inner.getBoundingClientRect();return clamp((e.clientX-r.left)/r.width*ed.dur,0,ed.dur);}
-function snapT(t){if(!ed.snap)return t;const tol=8/tl.pps;const cands=[ed.t,0,ed.dur,...ed.markers];let best=t,bd=tol;for(const c of cands){const d=Math.abs(t-c);if(d<bd){bd=d;best=c;}}return best;}
+// snap targets: the playhead (where it was when a handle drag began, since the drag then moves it), ends, markers
+function snapT(t){if(!ed.snap)return t;const tol=8/tl.pps;const ph=drag&&drag.ph0!=null?drag.ph0:ed.t;const cands=[ph,0,ed.dur,...ed.markers];let best=t,bd=tol;for(const c of cands){const d=Math.abs(t-c);if(d<bd){bd=d;best=c;}}return best;}
 let drag=null;
-function startDrag(kind,e,extra={}){drag=Object.assign({kind,x0:e.clientX,moved:false,before:kind==='scrub'?null:trimState()},extra);hideGhost();e.preventDefault();window.addEventListener('pointermove',onDrag);window.addEventListener('pointerup',endDrag,{once:true});if(kind==='in')els.hIn.classList.add('drag');if(kind==='out')els.hOut.classList.add('drag');}
+function startDrag(kind,e,extra={}){drag=Object.assign({kind,x0:e.clientX,moved:false,before:kind==='scrub'?null:trimState(),ph0:kind==='in'||kind==='out'?ed.t:null},extra);hideGhost();e.preventDefault();window.addEventListener('pointermove',onDrag);window.addEventListener('pointerup',endDrag,{once:true});if(kind==='in')els.hIn.classList.add('drag');if(kind==='out')els.hOut.classList.add('drag');}
 function onDrag(e){
   if(!drag)return;const t=tAt(e);if(Math.abs(e.clientX-drag.x0)>3)drag.moved=true;
-  if(drag.kind==='in'){ed.inT=Math.max(0,Math.min(snapT(t),ed.outT-MIN_SEL));updateSel();}
-  else if(drag.kind==='out'){ed.outT=Math.min(ed.dur,Math.max(snapT(t),ed.inT+MIN_SEL));updateSel();}
+  // dragging In or Out scrubs the video to that point, so you see the frame you're cutting at
+  if((drag.kind==='in'||drag.kind==='out')&&drag.moved&&ed.playing)pause();
+  if(drag.kind==='in'){ed.inT=Math.max(0,Math.min(snapT(t),ed.outT-MIN_SEL));updateSel();if(drag.moved)scrubTo(ed.inT);}
+  else if(drag.kind==='out'){ed.outT=Math.min(ed.dur,Math.max(snapT(t),ed.inT+MIN_SEL));updateSel();if(drag.moved)scrubTo(ed.outT);}
   else if(drag.kind==='move'&&drag.moved){const len=drag.out0-drag.in0;const ni=clamp(drag.in0+(t-drag.t0),0,ed.dur-len);ed.inT=ni;ed.outT=ni+len;updateSel();}
   else if(drag.kind==='scrub'){scrubTo(t);}
 }
 function endDrag(e){window.removeEventListener('pointermove',onDrag);els.hIn.classList.remove('drag');els.hOut.classList.remove('drag');
   if(drag&&drag.kind==='move'&&!drag.moved)seek(tAt(e));
-  if(drag&&drag.kind==='scrub'){clearTimeout(vsk.settle);if(!ed.playing)vSeek(ed.t);}   // land on the exact frame
+  if(drag&&(drag.kind==='scrub'||(drag.kind==='in'||drag.kind==='out')&&drag.moved)){clearTimeout(vsk.settle);if(!ed.playing)vSeek(ed.t);}   // land on the exact frame
   if(drag&&drag.before)pushUndo(drag.before);drag=null;}
 els.hIn.addEventListener('pointerdown',e=>{e.stopPropagation();startDrag('in',e);});
 els.hOut.addEventListener('pointerdown',e=>{e.stopPropagation();startDrag('out',e);});
@@ -1633,7 +1667,7 @@ function mixLine(c,tracks){
   const s=on.length?on.map(t=>`${esc(trackLabel(c,t.index))} ${Math.round(t.volume*100)}%`).join(' + '):'No audio';
   return off.length?`${s} <span class="off">(${off.map(t=>esc(trackLabel(c,t.index))).join(', ')} muted)</span>`:s;
 }
-const TILE_HINT=()=>`${ic('copy','sm')}<span><b>Click</b> to copy the file, then paste it in Discord with <b>Ctrl+V</b></span>`;
+const TILE_HINT=()=>`${ic('copy','sm')}<span><b>Drag</b> it into a Discord chat, or <b>click</b> to copy it and paste with <b>Ctrl+V</b></span>`;
 function renderDone(){
   const R=exp.result;if(!R)return;const {req,res}=R,c=S.byId[req.clipId]||ed.clip;
   const mb=MBof(res.sizeBytes),lim=req.limitMb,over=!!lim&&mb>lim;
@@ -1680,7 +1714,16 @@ $('#pCancel').addEventListener('click',()=>{
 $('#eRetry').addEventListener('click',()=>{if(exp.error)runExport(exp.error.req);});
 $('#eOptions').addEventListener('click',()=>{exp.error=null;$('#modal').dataset.view='setup';if(cur()!=='export')location.hash='export';else route();});
 $('#dCopy').addEventListener('click',()=>copyResult(false));
-$('#dragTile').addEventListener('click',()=>copyResult(true));
+// Drag the tile out (into a Discord chat, a folder, ...): a native file drag, as from Explorer. A click still copies.
+// The drag ends inside Windows, so the page may never see the pointerup: the next pointerdown starts afresh.
+let tileDrag=null;
+$('#dragTile').addEventListener('pointerdown',e=>{tileDrag=e.button===0?{x:e.clientX,y:e.clientY,started:false}:null;});
+$('#dragTile').addEventListener('pointermove',e=>{
+  const d=tileDrag,R=exp.result;if(!d||d.started||!R||!(e.buttons&1)||Math.hypot(e.clientX-d.x,e.clientY-d.y)<6)return;
+  d.started=true;const c=S.byId[R.req.clipId];
+  BT.startDrag(R.res.path,c&&c.thumb).catch(err=>fail("Couldn't drag the file",err));
+});
+$('#dragTile').addEventListener('click',()=>{if(tileDrag&&tileDrag.started)return;copyResult(true);});
 $('#dragTile').addEventListener('keydown',e=>{if(e.key===' '||e.key==='Enter'){e.preventDefault();e.stopPropagation();copyResult(true);}});
 $('#dDiscord').addEventListener('click',()=>{const copied=exp.result&&exp.result.res.copied;
   BT.openDiscord().then(()=>toast(copied?'Opening Discord… the file is on your clipboard':'Opening Discord… copy the file first, then paste it','chat'),e=>fail("Couldn't open Discord",e));});
@@ -1959,7 +2002,7 @@ $$('.seg[data-rec]').forEach(s=>s.addEventListener('click',e=>{
 }));
 $$('[data-rsw]').forEach(x=>x.addEventListener('click',()=>{
   const k=x.dataset.rsw,r=recCfg();if(!r)return;const v=!r[k];
-  const msg={confirm:v?'You’ll see a pop-up when a clip is saved':'No pop-up when a clip is saved',micEnabled:v?'The mic is recorded again':'The mic isn’t recorded any more',startWithWindows:v?'Backtrack starts with Windows, in the tray':'Backtrack won’t start with Windows'}[k];
+  const msg={confirm:v?'You’ll see a pop-up when a clip is saved':'No pop-up when a clip is saved',micEnabled:v?'The mic is recorded again':'The mic isn’t recorded any more',startWithWindows:v?'Backtrack starts with Windows, in the tray':'Backtrack won’t start with Windows',autoUpdate:v?'Backtrack updates itself when it starts':'Backtrack won’t check for updates'}[k];
   saveRecorder({[k]:v},[msg,k==='micEnabled'?(v?'mic':'vol-x'):'check']);
 }));
 $$('[data-enc]').forEach(b=>b.addEventListener('click',()=>{const r=recCfg(),v=b.dataset.enc;if(!r||r.encoder===v)return;saveRecorder({encoder:v},[`Encoder: ${$('b',b).firstChild.textContent.trim()}`,'chip']);}));
@@ -2189,6 +2232,8 @@ new ResizeObserver(()=>{if(cur()==='editor'||cur().startsWith('export')){renderT
 new ResizeObserver(()=>positionCrop()).observe($('#preview'));
 {const ro=new ResizeObserver(()=>fitSoon());ro.observe($('#inspector'));ro.observe($('.export-card'));}
 window.addEventListener('beforeunload',()=>{flushSave();});
+// an update is about to install and restart Backtrack: save any edit still waiting for its 400 ms delay right now
+BT.on('app-updating',v=>{flushSave();toast(`Updating Backtrack to ${v}…`,'replay');});
 
 /* ================================================================== DATA: first load + library-changed */
 async function loadAll(){

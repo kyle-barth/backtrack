@@ -83,14 +83,33 @@ jobs:
       - name: Install the Tauri CLI
         run: cargo install tauri-cli --version 2.12.6 --locked
 
-      # Builds src-tauri/target/release/backtrack.exe and the NSIS installer around it
+      # Builds src-tauri/target/release/backtrack.exe and the NSIS installer around it, and signs the installer
+      # for the updater (setup.exe.sig) with the key in the repo secrets. Installed copies only install an update
+      # whose signature matches the public key in tauri.conf.json.
       - name: Build the app and installer
         working-directory: src-tauri
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: cargo tauri build --config tauri.installer.conf.json
+
+      # Installed copies refuse an update whose signature doesn't match their key: check it here, not on people's PCs
+      - name: Check the updater signature against the app's public key
+        working-directory: src-tauri
+        env:
+          VERSION: ${{ steps.ver.outputs.version }}
+        run: |
+          $setup = Get-ChildItem target/release/bundle/nsis/*-setup.exe | Select-Object -First 1
+          if (-not $setup) { throw 'The NSIS installer was not built' }
+          $env:BACKTRACK_SIGNED_FILE = $setup.FullName
+          $env:BACKTRACK_SIGNED_VERSION = $env:VERSION
+          cargo test --release update_signature -- --ignored --nocapture
+          if ($LASTEXITCODE -ne 0) { throw 'The updater signature does not verify' }
 
       - name: Package
         env:
           VERSION: ${{ steps.ver.outputs.version }}
+          REPO: ${{ github.repository }}
         run: |
           $name = "backtrack-v$env:VERSION-windows-x64"
           # portable zip: just the app (bring your own FFmpeg)
@@ -104,6 +123,18 @@ jobs:
           Copy-Item $setup.FullName "dist/$name-setup.exe"
           $sums = (Get-ChildItem dist -File) | ForEach-Object { "$((Get-FileHash $_.FullName -Algorithm SHA256).Hash.ToLower())  $($_.Name)" }
           $sums | Set-Content -Encoding ascii dist/SHA256SUMS.txt
+          # what installed copies check when they start (releases/latest/download/latest.json): the newest version,
+          # where its installer is, and the installer's signature
+          $sig = "$($setup.FullName).sig"
+          if (-not (Test-Path $sig)) { throw 'The installer has no updater signature (is TAURI_SIGNING_PRIVATE_KEY set?)' }
+          [ordered]@{
+            version   = $env:VERSION
+            notes     = "https://github.com/$env:REPO/releases/tag/v$env:VERSION"
+            pub_date  = (Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+            platforms = @{ 'windows-x86_64' = [ordered]@{
+              signature = (Get-Content $sig -Raw).Trim()
+              url       = "https://github.com/$env:REPO/releases/download/v$env:VERSION/$name-setup.exe" } }
+          } | ConvertTo-Json -Depth 5 | Set-Content -Encoding utf8NoBOM dist/latest.json
           Get-ChildItem dist -File | Format-Table Name, Length
 
       - name: Commit the version bump and tag it
@@ -131,7 +162,7 @@ jobs:
           $notes = @"
           ## Install
 
-          Download **backtrack-v$env:VERSION-windows-x64-setup.exe** below and run it. FFmpeg is included, so there's nothing else to set up, and it installs just for you (no admin rights needed). Then press **Alt+S** in a game to save the last 60 seconds.
+          Download **backtrack-v$env:VERSION-windows-x64-setup.exe** below and run it. FFmpeg is included, so there's nothing else to set up, and it installs just for you (no admin rights needed). Then press **Alt+S** in a game to save the last 60 seconds. Once installed, Backtrack updates itself when it starts (you can turn that off in Settings).
 
           Prefer a portable copy? Unzip **backtrack-v$env:VERSION-windows-x64.zip** anywhere and install FFmpeg yourself: ``winget install Gyan.FFmpeg.Essentials``
 

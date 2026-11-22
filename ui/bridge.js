@@ -68,6 +68,7 @@ const BT = {
   openPath:         path                    => call('open_path', { path }),
   openDiscord:      ()                      => call('open_discord'),
   openTaskbarSettings: ()                   => call('open_taskbar_settings'),
+  startDrag:        (path, icon)            => call('start_drag', { path, icon: icon || null }),
   trashClip:        clipId                  => call('trash_clip', { clipId }),
   /** can the Recycle Bin keep this batch? → { fits, drives: [{ drive, bytes, capacity|null, permanent }] } (no file changes) */
   trashCheck:       clipIds                 => call('trash_check', { clipIds }),
@@ -95,7 +96,7 @@ const BT = {
   },
 
   /* ---------------------------------------------------------------- events */
-  /** BT.on('library-changed' | 'export-progress' | 'recorder-status' | 'clip-saved', fn) → unsubscribe() */
+  /** BT.on('library-changed' | 'export-progress' | 'recorder-status' | 'clip-saved' | 'app-updating', fn) → unsubscribe() */
   on(event, fn){
     let off = null, dead = false;
     Promise.resolve(backend.listen(event, fn)).then(u => { if (dead) u(); else off = u; })

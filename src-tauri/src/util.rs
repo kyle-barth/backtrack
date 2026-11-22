@@ -25,6 +25,27 @@ pub fn cache_sub(name: &str) -> PathBuf {
     d
 }
 
+/// Read a JSON data file (store.json, settings.json); missing means first run. A file that's there but can't be read
+/// as `T` (damaged, or written by a newer version) is first kept as `<name>.unreadable-<ms>.json` next to it, so
+/// starting from defaults, and saving them later, never wipes out someone's edits or settings.
+pub fn read_json_kept<T: serde::de::DeserializeOwned + Default>(path: &Path) -> T {
+    if !path.exists() {
+        return T::default();
+    }
+    let parsed = std::fs::read(path)
+        .map_err(|e| e.to_string())
+        .and_then(|b| serde_json::from_slice::<T>(&b).map_err(|e| e.to_string()));
+    match parsed {
+        Ok(v) => v,
+        Err(e) => {
+            let keep = path.with_extension(format!("unreadable-{}.json", now_ms()));
+            let kept = std::fs::copy(path, &keep).is_ok();
+            log("error", &format!("couldn't read {} ({e}); {}", path.display(), if kept { format!("kept it as {}", keep.display()) } else { "and couldn't keep a copy".into() }));
+            T::default()
+        }
+    }
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }
@@ -160,5 +181,28 @@ mod tests {
     fn slug() {
         assert_eq!(slugify("Call of Duty®"), "call-of-duty");
         assert_eq!(slugify("Call of Duty: Modern Warfare 2 (2009)"), "call-of-duty-modern-warfare-2-2009");
+    }
+    /// A data file Backtrack can't read is kept, byte for byte, before it starts from defaults.
+    #[test]
+    fn unreadable_data_file_is_kept() {
+        #[derive(serde::Deserialize, Default, Debug, PartialEq)]
+        struct D {
+            n: u32,
+        }
+        let dir = std::env::temp_dir().join(format!("bt-kept-{}", now_ms()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let missing = dir.join("missing.json");
+        assert_eq!(read_json_kept::<D>(&missing), D::default());
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 0, "a missing file leaves nothing behind");
+        let good = dir.join("good.json");
+        std::fs::write(&good, r#"{"n":7}"#).unwrap();
+        assert_eq!(read_json_kept::<D>(&good), D { n: 7 });
+        let bad = dir.join("store.json");
+        std::fs::write(&bad, b"{\"n\": \"not a number\"").unwrap();
+        assert_eq!(read_json_kept::<D>(&bad), D::default());
+        let kept: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.path()).filter(|p| p.to_string_lossy().contains("store.unreadable-")).collect();
+        assert_eq!(kept.len(), 1, "one copy of the unreadable file");
+        assert_eq!(std::fs::read(&kept[0]).unwrap(), b"{\"n\": \"not a number\"");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

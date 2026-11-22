@@ -190,7 +190,7 @@ function create(){
       monitor: 0,
       clipsDir: REC_CLIPS,
       hotkeys: {save:'Alt+S', toggle:'Alt+F9', muteMic:'Alt+F8', mark:'Alt+F7', open:'Ctrl+Alt+B'},
-      confirm: true, chatApp: 'Discord', micDevice: '', micEnabled: true, startWithWindows: false,
+      confirm: true, chatApp: 'Discord', micDevice: '', micEnabled: true, startWithWindows: false, autoUpdate: true,
     },
   };
   // like the backend: the recorder's folder is always one of the clip folders
@@ -481,6 +481,7 @@ function create(){
     open_path: ({path}) => { logs.push(['info', 'open_path ' + path]); return delay(30); },
     open_discord: () => { logs.push(['info', 'open_discord']); return delay(30); },
     open_taskbar_settings: () => { logs.push(['info', 'open_taskbar_settings']); return delay(30); },
+    start_drag: ({path}) => { logs.push(['info', 'start_drag ' + path]); return delay(10); },
     trash_clip({clipId}){
       const c = need(clipId); clips.splice(clips.indexOf(c), 1); bin.set(c.id, c);
       setTimeout(() => emit('library-changed', null), 60);

@@ -10,6 +10,7 @@ mod rec_app;
 mod recorder;
 mod settings;
 mod sys;
+mod update;
 mod util;
 mod winutil;
 
@@ -356,6 +357,28 @@ fn open_discord() -> Result<(), String> {
     sys::open_discord()
 }
 
+/// Drag a file out of the window as if from Explorer (e.g. an export into a Discord chat), with `icon` (a thumbnail)
+/// under the cursor. The drag runs on the window's thread and lasts until the file is dropped or the drag cancelled.
+#[tauri::command]
+fn start_drag(window: tauri::WebviewWindow, path: String, icon: Option<String>) -> Result<(), String> {
+    let file = PathBuf::from(&path);
+    if !file.is_file() {
+        return Err("The file isn't there any more".into());
+    }
+    let image = match icon.filter(|i| Path::new(i).is_file()) {
+        Some(i) => drag::Image::File(i.into()),
+        None => drag::Image::Raw(include_bytes!("../icons/icon.png").to_vec()),
+    };
+    let w = window.clone();
+    window
+        .run_on_main_thread(move || {
+            if let Err(e) = drag::start_drag(&w, drag::DragItem::Files(vec![file]), image, |_, _| {}, drag::Options::default()) {
+                util::log("warn", &format!("drag: {e}"));
+            }
+        })
+        .map_err(|e| e.to_string())
+}
+
 /// Windows' taskbar settings. Only its "Other system tray icons" switches can put an app's icon next to the clock:
 /// Windows 11 doesn't let apps do it themselves (the NotifyIconSettings registry values are only a copy).
 #[tauri::command]
@@ -554,6 +577,7 @@ fn main() {
         // A second launch just brings the running Backtrack to the front.
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| rec_app::show_main(app)))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(
             tauri_plugin_global_shortcut::Builder::new()
                 .with_handler(|app, shortcut, event| {
@@ -623,6 +647,11 @@ fn main() {
                     }
                 });
             }
+            // Updates: an installed copy installs a newer release, if there is one, as it starts.
+            update::announce_if_updated(&handle);
+            if state.settings.lock().unwrap().recorder.auto_update {
+                update::check_at_launch(&handle);
+            }
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -642,6 +671,7 @@ fn main() {
             open_path,
             open_discord,
             open_taskbar_settings,
+            start_drag,
             trash_clip,
             trash_clips,
             trash_check,

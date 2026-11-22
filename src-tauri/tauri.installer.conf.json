@@ -3,6 +3,7 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "createUpdaterArtifacts": true,
     "publisher": "Backtrack",
     "copyright": "Copyright (c) 2026 the Backtrack contributors. MIT License.",
     "homepage": "https://github.com/kyle-barth/backtrack",

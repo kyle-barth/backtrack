@@ -95,9 +95,13 @@ kbd{display:inline-flex;align-items:center;justify-content:center;min-width:20px
 
 /* tooltips */
 :where([data-tip]){position:relative}
-[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(-50%);padding:6px 9px;border-radius:6px;background:#04060a;border:1px solid var(--line-2);color:var(--text-1);font:500 12px/1.2 var(--font);white-space:nowrap;pointer-events:none;z-index:80;box-shadow:var(--shadow-pop);letter-spacing:0;text-transform:none}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;left:50%;bottom:calc(100% + 8px);transform:translateX(calc(-50% + var(--tip-dx,0px)));padding:6px 9px;border-radius:6px;background:#04060a;border:1px solid var(--line-2);color:var(--text-1);font:500 12px/1.2 var(--font);white-space:nowrap;pointer-events:none;z-index:80;box-shadow:var(--shadow-pop);letter-spacing:0;text-transform:none}
 [data-tip-pos="b"]:hover::after{bottom:auto;top:calc(100% + 8px)}
 [data-tip-pos="l"]:hover::after{left:auto;right:calc(100% + 10px);bottom:50%;transform:translateY(50%)}
+/* set by fitTip() in app.js when the tip would run off the window on its usual side (it also sets --tip-dx) */
+[data-tip-flip="b"]:hover::after{bottom:auto;top:calc(100% + 8px)}
+[data-tip-flip="t"]:hover::after{top:auto;bottom:calc(100% + 8px)}
+[data-tip-flip="r"]:hover::after{right:auto;left:calc(100% + 10px)}
 
 /* switch */
 .switch{position:relative;flex:none;width:38px;height:22px;border-radius:11px;background:var(--bg-5);transition:background .15s;box-shadow:inset 0 0 0 1px var(--line-2)}
@@ -260,6 +264,9 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .card:hover .thumb img{transform:scale(1.035)}
 .card.new .thumb{box-shadow:0 0 0 2px var(--accent),0 0 28px rgba(43,217,184,.22)}
 .dur{position:absolute;right:8px;bottom:8px;z-index:2;padding:3px 6px;border-radius:5px;background:rgba(5,7,10,.78);font:600 11.5px/1.2 var(--font);font-variant-numeric:tabular-nums;color:#fff}
+.dur.trim{display:flex;align-items:center;gap:4px}
+.dur.trim .i{width:11px;height:11px;color:var(--accent)}
+.hero-meta em.of{font-style:normal;color:var(--text-3)}
 .badge-new{position:absolute;left:8px;top:8px;z-index:2;padding:3px 7px;border-radius:5px;background:var(--accent);color:var(--accent-ink);font:800 10.5px/1.2 var(--font);letter-spacing:.07em;text-transform:uppercase;box-shadow:0 2px 8px rgba(0,0,0,.35)}
 .thumb-hover{position:absolute;inset:0;display:grid;place-items:center;opacity:0;transition:opacity .15s;z-index:1;background:rgba(5,7,10,.18)}
 .card:hover .thumb-hover,.hero-thumb:hover .thumb-hover{opacity:1}
@@ -655,6 +662,8 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .drag-tile{display:flex;flex-direction:column;border-radius:14px;padding:10px;border:2px dashed var(--accent-line);background:linear-gradient(var(--accent-soft),var(--accent-soft)),var(--bg-1);cursor:pointer;transition:transform .12s,border-color .12s}
 .drag-tile:hover{border-color:var(--accent);transform:translateY(-1px)}
 .drag-tile:active{transform:translateY(0)}
+/* the tile itself is dragged out as a file (app.js); stop the page's own image/text dragging and selection inside it */
+.drag-tile,.drag-tile *{-webkit-user-drag:none;user-select:none}
 .dt-thumb{position:relative;aspect-ratio:16/9;border-radius:9px;overflow:hidden}
 .dt-thumb img{width:100%;height:100%;object-fit:cover}
 .dt-thumb .play-c{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%)}
@@ -1490,6 +1499,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
             <div class="srow"><div class="sl"><b>Save clips to</b><span id="clipsStats"></span></div><span class="pathbox" id="clipsDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="clipsDir"></span></span><button class="btn sm" id="openClipsDir">Open</button><button class="btn sm" id="changeClipsDir">Change…</button></div>
             <div class="srow"><div class="sl"><b>Save exports to</b><span id="exStats"></span></div><span class="pathbox" id="exDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="exDir"></span></span><button class="btn sm" id="openExDir">Open</button><button class="btn sm" id="changeExDir">Change…</button></div>
             <div class="srow"><div class="sl"><b>Start with Windows</b><span>Opens in the tray with the replay buffer running</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Start with Windows" data-rsw="startWithWindows"></button></div>
+            <div class="srow"><div class="sl"><b>Update automatically</b><span>When it starts, Backtrack installs a newer version from GitHub, if there is one</span></div><button class="switch" role="switch" aria-checked="true" aria-label="Update automatically" data-rsw="autoUpdate"></button></div>
             <div class="srow"><div class="sl"><b>Show in the taskbar corner</b><span>Windows decides which icons sit next to the clock. Turn on Backtrack there to open or quit it with a right-click.</span></div><button class="btn sm" id="openTaskbarSettings">Open Windows settings</button></div>
           </section>
         </div>
@@ -1585,7 +1595,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
       </header>
       <div class="done-body">
         <!-- click copies the file (copy_file). A native drag-out into Discord comes later (needs an OS-level drag in Tauri). -->
-        <div class="drag-tile" id="dragTile" role="button" tabindex="0" aria-label="Exported file: click to copy it to the clipboard">
+        <div class="drag-tile" id="dragTile" role="button" tabindex="0" aria-label="Exported file: drag it into a chat, or click to copy it to the clipboard">
           <div class="dt-thumb"><span id="dThumbWrap" style="display:contents"></span><span class="dur" id="dDur"></span></div>
           <div class="dt-file"><span class="fi"><svg class="i"><use href="#i-file"/></svg></span><div style="min-width:0"><div class="dt-name" id="dName"></div><div class="dt-meta" id="dMeta"></div></div></div>
           <div class="dt-hint" id="dtHint"></div>

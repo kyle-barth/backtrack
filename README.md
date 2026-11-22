@@ -4,14 +4,14 @@
 
 **A free, open-source alternative to SteelSeries GG Moments.** Backtrack records the last minute of your game in the background. Press **Alt+S** and that moment is saved as a clip. Trim it, press **E**, and a Discord-sized copy (under 10 MB, no Nitro needed) is on your clipboard, ready to paste.
 
-Everything runs on your PC. There's no account, no cloud and no telemetry.
+Everything runs on your PC. There's no account, no cloud and no telemetry. The only thing it fetches is updates: when it starts, an installed copy checks this repository's latest release and installs a newer version if there is one (turn that off in Settings).
 
 ## What it does
 
 - **Replay buffer.** It keeps the last 60 seconds (or up to 5 minutes) in memory and records on your GPU, so it costs about 1% CPU.
 - **Three audio tracks, like GG.** You get game audio, voice chat (Discord) and your mic, each on its own track, so you can turn any of them down or off later.
 - **A simple trim editor.** It has a waveform for each track, markers and smooth timeline scrubbing.
-- **Discord-ready export.** It picks the best resolution and frame rate that fits 10 MB (or Nitro's 50 / 500 MB, or any size you like) and copies the file to your clipboard.
+- **Discord-ready export.** It picks the best resolution and frame rate that fits 10 MB (or Nitro's 50 / 500 MB, or any size you like) and copies the file to your clipboard, or you drag it straight into a chat.
 - **Clean up in bulk.** Select clips with a click on their corner, Ctrl/Shift+click or a game's **Select all**, then move them all to the Recycle Bin at once, with Undo. It checks first that the Recycle Bin can actually keep them.
 - **Works with your GG clips.** Point it at your SteelSeries Moments folder and it picks up game names, trims and the separate audio tracks.
 - **Hotkeys, a tray icon and a small "clip saved" pop-up.** It can also start with Windows.

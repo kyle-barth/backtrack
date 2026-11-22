@@ -12,7 +12,11 @@
   }
   html, body { margin: 0; height: 100%; background: transparent; overflow: hidden;
     font-family: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif; -webkit-font-smoothing: antialiased; }
-  .t { position: absolute; inset: 6px; display: flex; align-items: center; gap: 12px; padding: 0 16px 0 12px;
+  /* The card hugs its content, right-aligned in the (transparent, click-through) window, with even spacing: 14px
+     padding + the 1px border = 15px around the 34px icon on the left, top and bottom of the 64px card, and 15px
+     after the text on the right. */
+  .t { position: absolute; top: 6px; bottom: 6px; right: 6px; width: max-content; max-width: calc(100% - 12px); box-sizing: border-box;
+    display: flex; align-items: center; gap: 12px; padding: 0 14px;
     background: var(--bg); border: 1px solid var(--line); border-radius: 14px; color: var(--text);
     box-shadow: 0 10px 30px rgba(0, 0, 0, .45); transform: translateX(24px); opacity: 0;
     animation: in .28s cubic-bezier(.2, .8, .2, 1) forwards, out .3s ease-in 2.9s forwards; }
@@ -26,7 +30,7 @@
   .tx { min-width: 0; }
   b { display: block; font-size: 14px; font-weight: 650; letter-spacing: .1px; }
   span { display: block; font-size: 12.5px; color: var(--muted); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .bar { position: absolute; left: 12px; right: 12px; bottom: 6px; height: 2px; border-radius: 2px; background: var(--ok); opacity: .55;
+  .bar { position: absolute; left: 14px; right: 14px; bottom: 6px; height: 2px; border-radius: 2px; background: var(--ok); opacity: .55;
     transform-origin: left; animation: drain 3s linear forwards; }
   .t.err .bar { background: var(--err); } .t.warn .bar { background: var(--warn); } .t.mark .bar { background: var(--mark); }
   @keyframes in { to { transform: none; opacity: 1; } }

@@ -98,6 +98,7 @@ type ExportProgress = { stage: "analyse" | "encode" | "copy" | "finish"; percent
 | `reveal` | `{ path }` | none | Opens Explorer with the file selected. |
 | `open_path` | `{ path }` | none | Opens a folder or file with the default app. |
 | `open_discord` | none | none | Opens the Discord app (falls back to discord.com in the browser). |
+| `start_drag` | `{ path, icon? }` | none | Starts a native file drag of `path` (as if from Explorer), e.g. into a Discord chat, with the `icon` image (a thumbnail path) under the cursor. Returns as soon as the drag starts. |
 | `open_taskbar_settings` | none | none | Opens Windows' taskbar settings. Only its "Other system tray icons" switches can show the tray icon next to the clock; Windows doesn't let apps do that. |
 | `trash_clip` | `{ clipId }` | none | Sends the clip to the Recycle Bin (the UI must confirm first). Emits `library-changed`. |
 | `trash_clips` | `{ clipIds: string[], permanent?: bool }` | `{ trashed: string[], failed: [{ clipId, error }] }` | Sends several clips to the Recycle Bin in one go (the UI must confirm first, after `trash_check`). With `permanent: true` it deletes the files outright instead; only when the user chose that. Per-clip failures are listed in `failed` with a short reason ("It's open in another program"), not thrown; it rejects only if `clipIds` is empty. Emits `library-changed` once. |
@@ -159,6 +160,7 @@ recorder: {
   micDevice: string;         // "" = Windows default input, else an id from list_audio_devices
   micEnabled: boolean;
   startWithWindows: boolean; // starts minimised to the tray with the buffer running
+  autoUpdate: boolean;       // installed copies install a newer GitHub release when they start (default on)
 }
 ```
 

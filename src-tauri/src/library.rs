@@ -137,7 +137,7 @@ impl Library {
     pub fn load() -> Library {
         Library {
             index: Mutex::new(read_json(&util::cache_dir().join("index.json"))),
-            store: Mutex::new(read_json(&util::data_dir().join("store.json"))),
+            store: Mutex::new(util::read_json_kept(&util::data_dir().join("store.json"))),
             clips: Mutex::new(Vec::new()),
             scan_lock: Mutex::new(()),
             unreadable: Mutex::new(HashMap::new()),
@@ -557,4 +557,32 @@ fn probe(tools: &Tools, path: &Path) -> Result<Probe, String> {
         }
     }
     Ok(p)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Edits must survive an update: a store.json written by an older Backtrack, or with fields a newer one added,
+    /// still loads with every In/Out, marker, favourite and export record, and saves them back unchanged.
+    #[test]
+    fn store_from_older_and_newer_versions_keeps_edits() {
+        let old = r#"{"clips":{
+            "c:\\clips\\a.mp4":{"fav":true,"edits":{"inT":12.5,"outT":30.25,"markers":[15.0]},"exports":[]},
+            "c:\\clips\\b.mp4":{"edits":{"inT":0.0,"outT":9.0}}}}"#;
+        let s: Store = serde_json::from_str(old).unwrap();
+        let a = &s.clips["c:\\clips\\a.mp4"];
+        let e = a.edits.as_ref().unwrap();
+        assert!(a.fav);
+        assert_eq!((e.in_t, e.out_t, e.markers.clone()), (12.5, 30.25, vec![15.0]));
+        assert!(s.clips["c:\\clips\\b.mp4"].edits.as_ref().unwrap().markers.is_empty());
+
+        let newer = r#"{"version":2,"clips":{"c:\\clips\\a.mp4":{"fav":false,"tags":["x"],
+            "edits":{"inT":1.0,"outT":2.0,"markers":[],"speed":1.5},"exports":[]}}}"#;
+        let s: Store = serde_json::from_str(newer).unwrap();
+        assert_eq!(s.clips["c:\\clips\\a.mp4"].edits.as_ref().unwrap().out_t, 2.0);
+
+        let again: Store = serde_json::from_str(&serde_json::to_string(&s).unwrap()).unwrap();
+        assert_eq!(again.clips["c:\\clips\\a.mp4"].edits.as_ref().unwrap().in_t, 1.0);
+    }
 }
