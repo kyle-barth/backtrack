@@ -1,6 +1,6 @@
 [package]
 name = "backtrack"
-version = "0.4.2"
+version = "0.4.3"
 description = "Open-source replay buffer, clip editor and Discord exporter for Windows"
 edition = "2021"
 license = "MIT"
