@@ -28,6 +28,8 @@
   .t.err .ic { background: var(--err); color: #2a0006; }
   .t.mark .ic { background: var(--mark); color: #2a0019; }
   .t.info .ic { background: #2a3038; color: var(--text); }
+  /* "Backtrack updated": its own look (an outlined tile and a spark), so it can never pass for "Clip saved"'s solid tick */
+  .t.update .ic { background: rgba(43, 217, 184, .1); color: var(--ok); box-shadow: inset 0 0 0 1.5px rgba(43, 217, 184, .55); }
   svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2.2; stroke-linecap: round; stroke-linejoin: round; }
   .tx { min-width: 0; }
   b { display: block; font-size: 14px; font-weight: 650; letter-spacing: .1px; }
@@ -48,6 +50,7 @@
     err: '<svg viewBox="0 0 24 24"><path d="M15 9l-6 6M9 9l6 6"/><circle cx="12" cy="12" r="9"/></svg>',
     mark: '<svg viewBox="0 0 24 24"><path d="M12 3l3 6 6 .9-4.5 4.3 1 6.3L12 17.5 6.5 20.5l1-6.3L3 9.9 9 9z"/></svg>',
     info: '<svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="9"/><path d="M12 11v5M12 8v.5"/></svg>',
+    update: '<svg viewBox="0 0 24 24"><path d="M12 3.5l1.7 4.6a3 3 0 0 0 1.8 1.8l4.6 1.7-4.6 1.7a3 3 0 0 0-1.8 1.8L12 19.7l-1.7-4.6a3 3 0 0 0-1.8-1.8L3.9 11.6l4.6-1.7a3 3 0 0 0 1.8-1.8z"/><path d="M19 3v3M17.5 4.5h3"/></svg>',
   };
   // Show { title, sub, kind } and play the slide in and out from the start.
   function show(d) {

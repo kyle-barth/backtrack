@@ -141,14 +141,17 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
    ========================================================= */
 .app{height:100vh;display:grid;grid-template-rows:36px minmax(0,1fr)}
 .titlebar{display:grid;grid-template-columns:1fr auto 1fr;align-items:center;height:36px;background:var(--bg-0);border-bottom:1px solid var(--line-1);-webkit-app-region:drag;position:relative;z-index:20}
-.tb-left{display:flex;align-items:center;gap:10px;padding-left:12px;min-width:0}
+.tb-left{display:flex;align-items:center;gap:10px;padding:0 16px 0 12px;min-width:0}
+.brand{flex:none}
 .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:13px;letter-spacing:.01em}
 .brand svg{width:20px;height:20px}
-/* inline after the name, so the two share a text baseline (centred on its own, the smaller text sits 1px high) */
-.brand .ver{margin-left:6px;font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--text-3);font-variant-numeric:tabular-nums}
-.brand .ver:empty{display:none}
-.crumb{display:flex;align-items:center;gap:8px;color:var(--text-3);font-size:12.5px;white-space:nowrap}
-.crumb::before{content:"";width:1px;height:14px;background:var(--line-2)}
+/* the version is a quiet button: it opens What's new (see "What's new" below). The 1px nudge keeps its text on the name's baseline */
+.brand .ver{-webkit-app-region:no-drag;display:inline-flex;align-items:center;gap:6px;height:22px;margin:1px 0 0 -3px;padding:0 6px;border-radius:var(--r-sm);font-weight:500;font-size:11.5px;letter-spacing:0;color:var(--text-3);font-variant-numeric:tabular-nums;white-space:nowrap;transition:background .12s,color .12s}
+.brand .ver:hover,.brand .ver[aria-expanded=true]{background:var(--bg-3);color:var(--text-1)}
+.brand .ver[aria-expanded=true]::after{display:none}   /* no tooltip under its own popover */
+/* a long game name ends in "…" before it can reach the replay buffer pill (16px of air on the right of the column) */
+.crumb{position:relative;min-width:0;padding-left:9px;color:var(--text-3);font-size:12.5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.crumb::before{content:"";position:absolute;left:0;top:50%;width:1px;height:14px;margin-top:-7px;background:var(--line-2)}
 .tb-right{display:flex;justify-content:flex-end;align-items:center;height:100%}
 .tb-btn{-webkit-app-region:no-drag;display:grid;place-items:center;width:40px;height:36px;color:var(--text-2)}
 .tb-btn:hover{background:var(--bg-3);color:var(--text-1)}
@@ -858,6 +861,57 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .kr kbd{height:20px}
 
 /* =========================================================
+   What's new: the version in the title bar opens the release notes in a popover
+   ========================================================= */
+/* unread notes: the version becomes a small accent chip with a static dot ("Updated to 0.4.6"). Nothing moves: it waits */
+.brand .ver.new{gap:7px;margin-left:0;padding:0 9px 0 8px;background:var(--accent-soft);color:var(--accent);font-weight:600;font-size:12px;box-shadow:inset 0 0 0 1px rgba(43,217,184,.24)}
+.brand .ver.new::before{content:"";flex:none;width:6px;height:6px;border-radius:50%;background:var(--accent)}
+.brand .ver.new:hover,.brand .ver.new[aria-expanded=true]{background:rgba(43,217,184,.2);color:var(--accent-hi)}
+.pop.wn{display:flex;flex-direction:column;width:400px;max-height:calc(100vh - 56px);padding:0;overflow:hidden}
+.pop.wn:focus{outline:none}
+.wn-h{display:flex;align-items:center;gap:12px;padding:14px 10px 13px 16px;border-bottom:1px solid var(--line-1)}
+.wn-h .m-ico{width:34px;height:34px;border-radius:10px}
+.wn-h .m-ico svg.i{width:18px;height:18px}
+.wn-ht{flex:1;min-width:0;line-height:1.3}
+.wn-ht b{display:block;font-size:14px;font-weight:650}
+.wn-ht span{display:block;margin-top:1px;font-size:12px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.wn-ht .wn-sum{margin-top:2px;font-size:12.5px;color:var(--text-2);white-space:normal;text-wrap:pretty}   /* a catch-up's gist, in one line or two */
+.pop.wn .wn-x{display:grid;place-items:center;align-self:flex-start;width:28px;height:28px;min-height:0;padding:0;color:var(--text-2)}
+.wn-body{flex:1;min-height:0;overflow:auto;padding:2px 6px 10px}
+.wn-k{--c:var(--text-3)}
+.wn-k[data-k=new]{--c:var(--accent)}
+.wn-k[data-k=improved]{--c:var(--lane-voice)}
+.wn-k[data-k=fixed]{--c:var(--ok)}
+.wn .cap{display:flex;align-items:center;gap:7px;padding:12px 10px 3px;font-size:10.5px;color:var(--text-3)}
+.wn-k .cap::before{content:"";width:6px;height:6px;border-radius:2px;background:var(--c)}
+.wn-it{display:flex;align-items:flex-start;gap:12px;padding:6px 10px 7px}
+.wn-tx{flex:1;min-width:0;line-height:1.35}
+.wn-tx b{display:block;font-size:13px;font-weight:600;color:var(--text-1)}
+.wn-tx>span{display:block;margin-top:1px;font-size:12px;color:var(--text-3);text-wrap:pretty}
+.wn-v{font-style:normal;font-weight:500;color:var(--text-2);font-variant-numeric:tabular-nums}   /* which version a change came with (catch-ups) */
+.wn-keys{display:inline-flex;gap:3px;margin-left:7px;vertical-align:1px}
+.wn-keys kbd{height:18px;min-width:18px;font-size:10.5px}
+.pop.wn .wn-go{display:inline-flex;align-items:center;gap:2px;flex:none;width:auto;height:24px;min-height:0;margin:-3px -6px 0 0;padding:0 4px 0 8px;border-radius:var(--r-sm);color:var(--accent);font-size:12px;font-weight:600;white-space:nowrap}
+.pop.wn .wn-go:hover{background:var(--accent-soft);color:var(--accent-hi)}
+.wn-foot{display:flex;align-items:center;gap:2px;padding:5px 14px 5px 6px;border-top:1px solid var(--line-1);background:var(--bg-1);font-size:12px;color:var(--text-3)}
+.pop.wn .wn-more{display:inline-flex;align-items:center;gap:5px;width:auto;height:28px;min-height:0;padding:0 8px;border-radius:var(--r-sm);color:var(--text-2);font-size:12.5px;font-weight:600}
+.pop.wn .wn-more:hover{background:var(--bg-3);color:var(--text-1)}
+.wn-more svg{transition:transform .15s var(--ease)}
+.wn-more[aria-expanded=true] svg{transform:rotate(180deg)}
+.wn-n{display:inline-grid;place-items:center;min-width:18px;height:18px;padding:0 5px;border-radius:9px;background:var(--bg-4);font-style:normal;font-size:11px;font-weight:600;color:var(--text-2);font-variant-numeric:tabular-nums}
+.wn-older{margin:10px 4px 0;padding-top:2px;border-top:1px solid var(--line-1)}
+.wn-rel{padding:6px 6px 2px}
+.wn-rel-h{display:flex;align-items:baseline;gap:8px}
+.wn-rel-h b{font-size:12.5px;font-weight:650;font-variant-numeric:tabular-nums}
+.wn-rel-h span{font-size:12px;color:var(--text-3)}
+.wn-rel ul{list-style:none;margin:3px 0 4px}
+.wn-rel li{display:flex;align-items:flex-start;gap:8px;padding:2px 0;font-size:12.5px;line-height:1.35;color:var(--text-2)}
+.wn-rel li span{flex:1;min-width:0}
+.pop.wn .wn-rel .wn-go{height:22px;margin-top:-2px}
+.wn-rel li em{flex:none;width:62px;font-style:normal;font-size:11.5px;color:var(--text-3)}
+.about-row .btn{flex:none}
+
+/* =========================================================
    Phase 1 wiring: real data states (same tokens, no new look)
    ========================================================= */
 /* ---------- phase 2: recorder states (pill, sidebar card, popover, settings) ---------- */
@@ -1258,6 +1312,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
   <symbol id="i-chip" viewBox="0 0 24 24"><rect x="6" y="6" width="12" height="12" rx="2"/><rect x="9.5" y="9.5" width="5" height="5" rx="1"/><path d="M9.5 3v3M14.5 3v3M9.5 18v3M14.5 18v3M3 9.5h3M3 14.5h3M18 9.5h3M18 14.5h3"/></symbol>
   <symbol id="i-video" viewBox="0 0 24 24"><rect x="2.5" y="6" width="13.5" height="12" rx="2.5"/><path d="M16 10.5l5.5-3.5v10L16 13.5z"/></symbol>
   <symbol id="i-replay" viewBox="0 0 24 24"><path d="M4 12a8 8 0 1 0 2.4-5.7"/><path d="M4 4.5v4h4"/><path d="M12 8.5V12l2.5 1.8"/></symbol>
+  <symbol id="i-spark" viewBox="0 0 24 24"><path d="M12 3.5l1.7 4.6a3 3 0 0 0 1.8 1.8l4.6 1.7-4.6 1.7a3 3 0 0 0-1.8 1.8L12 19.7l-1.7-4.6a3 3 0 0 0-1.8-1.8L3.9 11.6l4.6-1.7a3 3 0 0 0 1.8-1.8z"/><path d="M19 3v3M17.5 4.5h3"/></symbol>
   <symbol id="i-share" viewBox="0 0 24 24"><circle cx="6.5" cy="12" r="2.5"/><circle cx="17.5" cy="6" r="2.5"/><circle cx="17.5" cy="18" r="2.5"/><path d="M8.7 10.8l6.6-3.6M8.7 13.2l6.6 3.6"/></symbol>
   <symbol id="i-doc" viewBox="0 0 24 24"><rect x="4.5" y="3" width="15" height="18" rx="2.5"/><path d="M8.5 8h7M8.5 12h7M8.5 16h4"/></symbol>
   <symbol id="i-pencil" viewBox="0 0 24 24"><path d="M4 20h4.2L19.3 8.9a2.1 2.1 0 0 0 0-3l-1.2-1.2a2.1 2.1 0 0 0-3 0L4 15.8z"/><path d="M13.5 6.5l4 4"/></symbol>
@@ -1277,7 +1332,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
        non-interactive children (never on buttons); app.js covers any other child with startDragging() -->
   <header class="titlebar" id="titlebar" data-tauri-drag-region>
     <div class="tb-left" data-tauri-drag-region>
-      <div class="brand" data-tauri-drag-region><svg data-tauri-drag-region><use href="#logo"/></svg><span data-tauri-drag-region>Backtrack<span class="ver" id="appVer" data-tauri-drag-region></span></span></div>
+      <div class="brand" data-tauri-drag-region><svg data-tauri-drag-region><use href="#logo"/></svg><span data-tauri-drag-region>Backtrack</span><button class="ver" id="appVer" aria-haspopup="dialog" aria-expanded="false" data-tip-pos="b" hidden></button></div>
       <div class="crumb" id="crumb" data-tauri-drag-region></div>
     </div>
     <!-- replay buffer state from recorder-status (app.js renderPill) -->
@@ -1610,7 +1665,7 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
           <h3 class="sg-h" id="h-updates">Updates</h3>
           <div class="scard">
             <div class="srow" data-find="update automatically auto updates github new version"><div class="sl"><b>Update automatically</b><span>When it starts, Backtrack installs a newer version from GitHub, if there is one</span></div><button class="switch" role="switch" aria-checked="true" aria-label="Update automatically" data-rsw="autoUpdate"></button></div>
-            <div class="srow about-row" data-find="about backtrack" data-alias="version" data-label="About Backtrack"><svg class="logo"><use href="#logo"/></svg><div class="sl" id="setFoot"><b>Backtrack</b></div></div>
+            <div class="srow about-row" data-find="about backtrack" data-alias="version" data-label="About Backtrack"><svg class="logo"><use href="#logo"/></svg><div class="sl" id="setFoot"><b>Backtrack</b></div><button class="btn sm" id="setNotes" aria-haspopup="dialog" aria-expanded="false" data-label="What’s new" data-find="what’s new whats new release notes patch notes changelog changes updated update new version" data-findopen>What’s new</button></div>
           </div>
         </section>
       </div>
@@ -1743,6 +1798,8 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
 
 <div class="toast" id="toast" role="status" aria-live="polite"><svg class="i sm"><use href="#i-check-c"/></svg><span id="toastMsg"></span><button class="toast-act" id="toastAct" hidden></button></div>
 
+<!-- the release notes, bundled with the app (What's new) -->
+<script src="whatsnew.js"></script>
 <!-- mock.js only takes effect when window.__TAURI__ is missing (plain browser / headless Chrome) -->
 <script src="mock.js"></script>
 <script src="bridge.js"></script>

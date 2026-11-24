@@ -27,6 +27,14 @@
      nuke=1                 trash_check: C: deletes files straight away (no Recycle Bin)
      mixed=1                PEAK's clips live on D:\Clips, a drive with no Recycle Bin (a mixed-drive batch)
      checkms=N              trash_check takes N ms (default 40), e.g. checkms=1500 for a slow drive
+   What's new (the app is 0.4.6 unless version= says otherwise; appVersion returns it):
+     mock=updated           it just updated from 0.4.5 to 0.4.6
+     updatedfrom=X.Y.Z      it updated from an older version, e.g. updatedfrom=0.4.2 (a catch-up across 4 releases)
+     mock=oldupdate         it updated from a version that didn't keep track of the notes (seen ''): the latest release only
+     mock=seen              with updated / updatedfrom: the notes were already opened
+     mock=newinstall        a fresh install: nothing to tell
+     version=X.Y.Z          run as another version: updatedfrom=0.4.3&version=0.4.4 is a quiet release (no highlights, so no signal)
+     wnreset=1              forget what you opened in these scenarios (it's kept per scenario in localStorage)
    ===================================================================== */
 (function(){
 'use strict';
@@ -40,6 +48,8 @@ const EXPORTS = HOME + '\\Videos\\Backtrack\\Exports';
 const CACHE = HOME + '\\AppData\\Local\\Backtrack\\cache';
 const FFMPEG = 'C:\\Program Files\\FFmpeg\\bin\\ffmpeg.exe';
 const REC_CLIPS = HOME + '\\Videos\\Backtrack\\Clips';
+// this copy of the UI is 0.4.6 (app.getVersion()); version=X.Y.Z pretends to be another one, e.g. a quiet fixes-only release
+const VERSION = ((location.search + '&' + location.hash).match(/[?&]version=(\d+\.\d+\.\d+)/) || [])[1] || '0.4.6';
 const MONITORS = [
   {index:0, name:'DELL S2721DGF', width:2560, height:1440, primary:true},
   {index:1, name:'LG 27UL500', width:1440, height:2560, primary:false},   // turned to portrait
@@ -363,7 +373,29 @@ function create(){
     return delay(250, payload);
   }
 
+  /* What's new: the version that's running and how far the person has read. The real app keeps this in
+     %APPDATA%\Backtrack\whats-new.json; here, what the person does in a scenario (opening the notes) is kept in
+     localStorage under that scenario, so a reload shows the right thing. */
+  const wnFromM = (location.search + '&' + location.hash).match(/[?&]updatedfrom=(\d+\.\d+\.\d+)/);
+  const wnFrom = wnFromM ? wnFromM[1] : flags.has('updated') ? '0.4.5' : flags.has('oldupdate') ? '' : null;
+  const WN_NS = 'bt.wn.', WN_KEY = WN_NS + (wnFrom === null ? 'none' : wnFrom || 'old');
+  const wnLS = { get(){ try { return JSON.parse(localStorage.getItem(WN_KEY) || 'null') || {}; } catch (_) { return {}; } },
+    set(v){ try { localStorage.setItem(WN_KEY, JSON.stringify(v)); } catch (_) {} } };
+  if (qp('wnreset')){   // once: it also comes off the address, so a reload keeps what you do next
+    try { Object.keys(localStorage).filter(k => k.startsWith(WN_NS)).forEach(k => localStorage.removeItem(k)); } catch (_) {}
+    history.replaceState(null, '', location.href.replace(/([?&])wnreset=1(&|(?=#)|$)/, (m, a, b) => b ? a : '').replace('?#', '#'));
+  }
+  const notes = Object.assign({
+    version: VERSION,
+    seen: wnFrom === null ? VERSION : wnFrom,    // notes are read up to here: the range shown is (seen, version]
+    fresh: flags.has('newinstall'),              // first run after a fresh install
+    updatedAt: Date.now() - 3 * 3600e3,          // when this version first ran
+  }, wnLS.get());
+  if (flags.has('seen')) notes.seen = VERSION;
+
   const commands = {
+    notes_state: () => delay(15, clone(notes)),
+    set_notes_state({patch}){ Object.assign(notes, patch); wnLS.set(Object.assign(wnLS.get(), patch)); return delay(10, clone(notes)); },
     get_settings: () => clone(settings),
     save_settings({settings: s}){
       const dirsBefore = JSON.stringify(settings.clipDirs);
@@ -560,7 +592,7 @@ function create(){
     emit,
     window: { minimize: () => delay(0), toggleMaximize: () => delay(0), close: () => delay(0), startDragging: () => delay(0) },
     pickFolder: () => delay(120, folders[pick++ % folders.length]),
-    appVersion: () => Promise.resolve('0.1.0'),
+    appVersion: () => Promise.resolve(VERSION),
     dirOf,
   };
 }

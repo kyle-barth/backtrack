@@ -46,6 +46,14 @@ pub fn read_json_kept<T: serde::de::DeserializeOwned + Default>(path: &Path) -> 
     }
 }
 
+/// Write a JSON data file whole or not at all (a crash mid-write leaves the old one).
+pub fn write_json_atomic<T: serde::Serialize>(path: &Path, value: &T) -> Result<(), String> {
+    let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
+    let tmp = path.with_extension("tmp");
+    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
+}
+
 pub fn now_ms() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
 }

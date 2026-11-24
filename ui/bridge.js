@@ -91,6 +91,13 @@ const BT = {
   suspendHotkeys:   (suspended)             => call('suspend_hotkeys', { suspended }),
   // Start a fresh Backtrack and quit this one (e.g. after a graphics driver crash broke recording).
   restartApp:       ()                      => call('restart_app'),
+
+  /* ---------------------------------------------------------------- what's new */
+  /** → { version, seen, fresh, updatedAt }: the release notes (whatsnew.js) after `seen`, up to `version`, are unread.
+      `seen` is '' after an update from a version that didn't keep track yet (0.4.6 and earlier). */
+  notesState:       ()                      => call('notes_state'),
+  /** patch: { seen } → the new state (the backend keeps it in %APPDATA%\Backtrack\whats-new.json) */
+  setNotesState:    patch                   => call('set_notes_state', { patch }),
   /** never throws, never rejects: logging must not break the UI */
   log(level, msg){
     try { return call('log', { level: String(level), msg: String(msg).slice(0, 8000) }).catch(() => {}); }

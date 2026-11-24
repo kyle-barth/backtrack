@@ -210,6 +210,69 @@ fn toast_page_keeps_what_the_reused_window_calls() {
     assert!(rec_app.contains("window.__TOAST = {data};") && rec_app.contains("show({data})"), "rec_app::toast no longer uses them");
 }
 
+const NOTES: &str = include_str!("../../ui/whatsnew.js");
+
+/// The `'…'` values given for `key` in whatsnew.js, in order (comments left out).
+fn notes_values(key: &str) -> Vec<String> {
+    let code = js_code(NOTES);
+    let pat = format!("{key}: '");
+    let mut out = Vec::new();
+    let mut rest = code.as_str();
+    while let Some(i) = rest.find(&pat) {
+        let whole = !rest[..i].ends_with(|c: char| c.is_alphanumeric() || c == '_');
+        rest = &rest[i + pat.len()..];
+        let end = rest.find('\'').expect("closing quote");
+        if whole {
+            out.push(rest[..end].to_string());
+        }
+        rest = &rest[end + 1..];
+    }
+    out
+}
+
+/// What's new: the release notes ship in ui/whatsnew.js, newest first, and cover the version being built. The release
+/// workflow sets the version before it runs the tests, so a release can't go out without its notes.
+#[test]
+fn release_notes_cover_this_version() {
+    let versions = notes_values("version");
+    let this = env!("CARGO_PKG_VERSION");
+    assert!(versions.iter().any(|v| v == this), "ui/whatsnew.js has no notes for {this}: write them before releasing");
+    let num = |v: &str| v.split('-').next().unwrap().split('.').map(|p| p.parse::<u64>().expect(v)).collect::<Vec<_>>();
+    for w in versions.windows(2) {
+        assert!(num(&w[0]) > num(&w[1]), "whatsnew.js must be newest first, once each: {} then {}", w[0], w[1]);
+    }
+    let dates = notes_values("date");
+    assert_eq!((dates.len(), notes_values("title").len()), (versions.len(), versions.len()), "every release needs a date and a title");
+    for d in dates {
+        assert!(d.len() == 10 && d.chars().enumerate().all(|(i, c)| if i == 4 || i == 7 { c == '-' } else { c.is_ascii_digit() }), "date '{d}' isn't YYYY-MM-DD");
+    }
+    let kinds = notes_values("kind");
+    assert!(!kinds.is_empty());
+    for k in kinds {
+        assert!(["new", "improved", "fixed"].contains(&k.as_str()), "unknown kind '{k}' in whatsnew.js");
+    }
+}
+
+/// Every link in the notes ("Show me", "Try it") goes somewhere: an action the page knows, or a Settings page or
+/// section it can open (app.js: wnGo, DEEP, SPAGES).
+#[test]
+fn release_note_links_go_somewhere() {
+    let app = js_code(APP);
+    let between = |a: &str, b: &str| app.split(a).nth(1).and_then(|s| s.split(b).next()).unwrap_or_else(|| panic!("{a} not in app.js")).to_string();
+    let deep = format!(",{}", between("const DEEP={", "};"));
+    let pages = between("const SPAGES=[", "];");
+    assert!(app.contains("g==='find'") && app.contains("g==='buffer-menu'||g==='restart'"), "wnGo's actions changed");
+    let links = notes_values("go");
+    assert!(!links.is_empty());
+    for g in links {
+        let ok = match g.as_str() {
+            "find" | "buffer-menu" | "restart" | "#settings" | "#library" => true,
+            _ => g.strip_prefix("#settings-").is_some_and(|k| deep.contains(&format!(",{k}:[")) || pages.contains(&format!("'{k}'"))),
+        };
+        assert!(ok, "whatsnew.js links to '{g}', which the page can't open");
+    }
+}
+
 #[test]
 fn css_parsing() {
     let css = "<style>/* a{animation:x 1s infinite} */ .a, .b .c{color:red;animation: spin .9s linear infinite}\

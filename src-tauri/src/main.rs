@@ -563,6 +563,8 @@ fn main() {
     if let Some(pid) = args.iter().position(|a| a == "--restarted-from").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()) {
         winutil::wait_for_exit(pid, std::time::Duration::from_secs(20));
     }
+    // What's new: settled first, while the data folder still shows whether Backtrack ran here before.
+    update::notes_at_start();
     util::log("info", "Backtrack starting");
     let settings = Settings::load();
     let state = Arc::new(AppState {
@@ -675,7 +677,7 @@ fn main() {
                 });
             }
             // Updates: an installed copy installs a newer release, if there is one, as it starts.
-            update::announce_if_updated(&handle);
+            update::announce_if_updated(&handle, background);
             if state.settings.lock().unwrap().recorder.auto_update {
                 update::check_at_launch(&handle);
             }
@@ -713,7 +715,9 @@ fn main() {
             rec_app::list_audio_devices,
             rec_app::list_monitors,
             rec_app::suspend_hotkeys,
-            rec_app::restart_app
+            rec_app::restart_app,
+            update::notes_state,
+            update::set_notes_state
         ])
         .build(tauri::generate_context!())
         .expect("error while building Backtrack")

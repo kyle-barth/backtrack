@@ -217,3 +217,15 @@ type Monitor = { index: number; name: string; width: number; height: number; pri
 
 - Closing the window while the buffer is on hides Backtrack to the tray; it keeps recording. The tray menu has Save clip, Replay buffer on/off, Open Backtrack and Quit.
 - The "clip saved" pop-up in the corner of the game is a separate small native window (`ui/toast.html`), owned by the Rust side; the main UI doesn't render it.
+
+## What's new (release notes)
+
+The notes for every release ship inside the app in `ui/whatsnew.js` (written for people when each release is made; a test fails the build if the version being built has none). After an update, the version in the title bar reads "Updated to x.y.z" until the notes are opened. The backend only remembers how far they've been read, in `%APPDATA%\Backtrack\whats-new.json`, settled at start-up before anything else writes to that folder.
+
+| Command | Args | Returns | Notes |
+|---|---|---|---|
+| `notes_state` | none | `{ version, seen, fresh, updatedAt }` | The notes after `seen`, up to `version`, are unread. `seen` is `""` after an update from a version that didn't keep the file yet (0.4.6 and earlier): the page then treats the release before this one as read and saves that. `fresh`: the first run after a fresh install. `updatedAt` (ms): when this version first ran; the title bar stops saying "Updated to" 14 days later. |
+| `set_notes_state` | `{ patch: { seen } }` | the same | The page read the notes up to `seen` (never past the version running). |
+
+- **Installing waits for games.** A downloaded update isn't installed while a game is in front (exclusive or borderless full screen, or a known game): the restart would empty the replay buffer mid-match. It waits, checking every 10 s, or installs at the next launch.
+- **The corner pop-up** ("Backtrack updated to x.y.z · Replay buffer is back on", its own `update` look) only shows when the update restarted Backtrack in the tray and no game is in front. When the window comes back in front of you, the title bar says it instead.

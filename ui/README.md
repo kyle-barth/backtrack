@@ -10,7 +10,8 @@ Plain HTML/CSS/JS: no bundler, no npm, no network requests. Tauri serves this fo
 
 | File | What it is |
 |---|---|
-| `index.html` | Markup and all CSS (the prototype's design tokens and styles, plus "Phase 1 wiring" and "phase 2: recorder states" blocks for the new states). It loads the three scripts below, in order. The corner pop-up `toast.html` belongs to the Rust side and isn't here. |
+| `index.html` | Markup and all CSS (the prototype's design tokens and styles, plus "Phase 1 wiring" and "phase 2: recorder states" blocks for the new states). It loads the four scripts below, in order. The corner pop-up `toast.html` belongs to the Rust side and isn't here. |
+| `whatsnew.js` | `window.BT_NOTES`: the release notes for What's new, newest first, one entry per release (see the comment at its top). Add the next release's entry before releasing: a test fails without it. |
 | `mock.js` | `window.BTMock`: the mock backend. Only used when `window.__TAURI__` is missing. |
 | `bridge.js` | `window.BT`: one wrapper per command and event in API.md, file URLs, window controls, folder picker, and the global error handlers. |
 | `app.js` | The UI: library, editor, export dialog, settings and router. It never touches Tauri or the mock directly. |
@@ -52,6 +53,7 @@ Every call returns a Promise. Failures reject with the backend's human-readable 
 | `pickFolder({title, defaultPath})` → path or `null` | `dialog.open({ directory: true, multiple: false, … })` |
 | `window.minimize / toggleMaximize / close / startDragging()` | `window.getCurrentWindow().…` |
 | `appVersion()` | `app.getVersion()` |
+| `notesState()`, `setNotesState({seen})` | `notes_state`, `set_notes_state { patch }` (What's new: how far the release notes have been read) |
 | `isMock`, `mock` | `true` and the mock instance when running without Tauri |
 
 `bridge.js` also installs `window.onerror` and an `unhandledrejection` handler that forward to `BT.log('error', …)`, capped at 100 per session.
@@ -74,6 +76,7 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
   `binfull=1` and `nuke=1` (also their own parameters): `trash_check` reports the Recycle Bin on the clips' drive as holding only 2 GB (bigger batches don't fit), or that drive as deleting straight away. `restore_clips` puts back what `trash_clips` / `trash_clip` moved in this session.
   `mixed=1` puts PEAK's clips on a D: drive with no Recycle Bin (a mixed-drive batch: "Move N, skip D:"), and `checkms=N` makes `trash_check` take N ms (e.g. `checkms=1500`, to see OK wait for the check).
   Recorder flags: `recorderoff`, `recorderstarting` (stays in "starting"), `recordererror` (NVENC chosen on an AMD PC), `fresh` (the buffer starts empty), `hotkeyconflict` (Alt+S is taken by another app).
+  What's new (the app is 0.4.6 unless `version=X.Y.Z`): `updated` (from 0.4.5), `updatedfrom=X.Y.Z` (a catch-up, e.g. `updatedfrom=0.4.2`), `oldupdate` (from a version that didn't keep track), `seen`, `newinstall`; `wnreset=1` forgets what was opened.
 - **Recorder:** see Phase 2 below.
 
 ## What's wired

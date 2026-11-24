@@ -133,7 +133,7 @@ function runUndo(){
 }
 
 let popEl=null;
-function closePop(){if(popEl){popEl.remove();popEl=null;}$$('.menu-for').forEach(x=>x.classList.remove('menu-for'));}
+function closePop(){if(popEl){const p=popEl;p.remove();popEl=null;if(p.onclose)p.onclose();}$$('.menu-for').forEach(x=>x.classList.remove('menu-for'));}
 function placePop(p,anchor,align,at){
   document.body.appendChild(p);popEl=p;
   const r=at?{left:at.x,right:at.x,top:at.y,bottom:at.y}:anchor.getBoundingClientRect(),pw=p.offsetWidth,ph=p.offsetHeight;
@@ -1994,6 +1994,8 @@ function syncFind(){$$('.fhit',findList).forEach((o,i)=>o.setAttribute('aria-sel
 function pickFind(i){
   const h=findHits[i];if(!h)return;findEl.value='';renderFind();
   if(h.page){openSetPage(h.page);$('#h-'+h.page).focus();return;}
+  // a result that opens something (What's new): bring its row into view, then open it next to its button
+  if(h.el.hasAttribute('data-findopen')){jumpTo(h.el.closest('.srow')||h.el,h.el);setTimeout(()=>h.el.click(),0);return;}
   jumpTo(h.el);
 }
 findEl.addEventListener('input',renderFind);
@@ -2079,7 +2081,7 @@ function recHead(){
   if(st.state==='starting')return '<span class="rec-dot starting"></span><div><b>Starting the replay buffer…</b>It keeps the last '+fmtBuf(r.bufferSecs)+' once it’s running</div>';
   return '<span class="rec-dot off"></span><div><b>Replay buffer off</b>The save hotkey does nothing until it’s on</div>';
 }
-function openRecMenu(anchor){
+function openRecMenu(anchor,o={}){   // o.restart: also offer Restart Backtrack, with the focus on it (a What's new link)
   if(popEl&&popEl.classList.contains('recpop')){closePop();return;}
   const st=REC.status,r=recCfg();if(!st||!r)return;const on=st.state==='on',hk=r.hotkeys,items=[];
   if(on){
@@ -2088,7 +2090,7 @@ function openRecMenu(anchor){
     if(r.micEnabled)items.push({k:'mic',icon:st.micMuted?'mic':'vol-x',label:st.micMuted?'Unmute mic':'Mute mic',sub:'In recordings only, not in Discord',right:hk.muteMic});
   }
   if(st.state==='error')items.push({k:'retry',icon:'reset',label:'Try again'});
-  if(st.state==='error'||restarting(st))items.push({k:'restart',icon:'replay',label:'Restart Backtrack',sub:'Starts the app, recorder and window afresh'});
+  if(st.state==='error'||restarting(st)||o.restart)items.push({k:'restart',icon:'replay',label:'Restart Backtrack',sub:'Starts the app, recorder and window afresh'});
   items.push(st.state==='off'?{k:'on',icon:'power',label:'Turn on',right:hk.toggle}:{k:'off',icon:'power',label:'Turn off',sub:'The save hotkey stops working',right:hk.toggle});
   items.push({sep:true},{k:'settings',icon:'gear',label:'Recorder settings'});
   popKeys(openPop(anchor,items,it=>{
@@ -2100,6 +2102,7 @@ function openRecMenu(anchor){
     else if(it.k==='restart')restartApp();
     else if(it.k==='settings')go('settings-capture');
   },'left',null,{head:recHead(),cls:'recpop'}),anchor);   // the menu takes the keyboard focus; Esc gives it back to the pill
+  if(o.restart){const b=$$('.recpop button').find(x=>x.textContent.startsWith('Restart Backtrack'));if(b)b.focus();}
 }
 $('#bufferPill').addEventListener('click',e=>{const st=REC.status;if(!st)return;if(st.state==='off'&&!(popEl&&popEl.classList.contains('recpop'))){setBufferEnabled(true);return;}openRecMenu(e.currentTarget);});
 /* ---------- library sidebar card */
@@ -2417,7 +2420,7 @@ new ResizeObserver(()=>positionCrop()).observe($('#preview'));
 {const ro=new ResizeObserver(()=>fitSoon());ro.observe($('#inspector'));ro.observe($('.export-card'));}
 window.addEventListener('beforeunload',()=>{flushSave();flushRec();});
 // an update is about to install and restart Backtrack: save any edit still waiting for its 400 ms delay right now
-BT.on('app-updating',v=>{flushSave();toast(`Updating Backtrack to ${v}…`,'replay');});
+BT.on('app-updating',v=>{flushSave();toast(`Updating Backtrack to ${v}…`,'spark');});   // updates have their own icon (Recording has the replay one)
 
 /* ================================================================== DATA: first load + library-changed */
 async function loadAll(){
@@ -2468,7 +2471,150 @@ document.addEventListener('visibilitychange',()=>{
   renderRecorder();
   if(libDirty){libDirty=false;refetch();}
 });
-BT.appVersion().then(v=>{S.version=v||'';$('#appVer').textContent=S.version?'v'+S.version:'';if(cur().startsWith('settings'))renderSettings();}).catch(()=>{});
+/* ================================================================== WHAT'S NEW
+   The release notes ship inside the app (whatsnew.js, newest first). The backend says which version is running and
+   how far the person has read (notes_state): every release after `seen`, up to this version, is unread. Nothing here
+   opens by itself or takes the focus; the notes open when the person asks, and Esc closes them. */
+const NOTES=window.BT_NOTES||[];
+const vparts=v=>String(v||'').split('.').map(n=>parseInt(n,10)||0);
+function vcmp(a,b){const x=vparts(a),y=vparts(b);for(let i=0;i<3;i++){const d=(x[i]||0)-(y[i]||0);if(d)return d;}return 0;}
+const WN={st:null,list:[],tell:false};   // list: the unread releases (newest first); tell: one of them has something worth a signal
+const KIND={new:'New',improved:'Improved',fixed:'Fixed'};
+const relDate=(d,y)=>{const t=new Date(d+'T12:00:00');return `${t.getDate()} ${MON[t.getMonth()]}${y?' '+t.getFullYear():''}`;};   // 24 Nov (2026)
+const nUpdates=n=>n===1?'1 update':`${n} updates`;
+function wnApply(st){
+  // seen '': it updated from a version that didn't keep track yet (0.4.6 and earlier), so which one isn't known. The
+  // notes are then read up to the release before this one: the latest release is new, without claiming where from.
+  // That guess is kept, so if another update comes before the notes are opened, both releases are new.
+  if(!st.seen&&!st.fresh){const prev=NOTES.find(r=>vcmp(r.version,st.version)<0);st.guess=true;st.seen=prev?prev.version:st.version;
+    BT.setNotesState({seen:st.seen}).catch(e=>BT.log('warn','set_notes_state failed: '+errMsg(e)));}
+  WN.st=st;
+  WN.list=st.fresh?[]:NOTES.filter(r=>vcmp(r.version,st.seen)>0&&vcmp(r.version,st.version)<=0);
+  WN.tell=WN.list.some(r=>r.items.some(i=>i.highlight));   // quiet releases (fixes only, say) wait for the next one that has news
+}
+const wnUnread=()=>!!WN.st&&WN.tell&&vcmp(WN.st.seen,WN.st.version)<0;
+const wnLatest=()=>NOTES.find(r=>vcmp(r.version,S.version||'0')<=0)||NOTES[0];
+function markNotesRead(){
+  const st=WN.st;if(!st||vcmp(st.seen,st.version)>=0)return;
+  st.seen=st.version;BT.setNotesState({seen:st.version}).catch(e=>BT.log('warn','set_notes_state failed: '+errMsg(e)));
+}
+/* a link in the notes goes to the thing it describes and lands like a Find a setting result: the setting's page opens,
+   its row flashes and its control has the focus. The actions: Find a setting itself, the replay buffer menu, and that
+   menu with Restart Backtrack in it (focused). */
+function wnGo(g){
+  const inSet=cur().startsWith('settings');
+  if(g==='find'){if(!inSet)go('settings');setTimeout(()=>{findEl.focus();findEl.select();},inSet?0:60);return;}
+  if(g==='buffer-menu'||g==='restart'){setTimeout(()=>openRecMenu($('#bufferPill'),{restart:g==='restart'}),0);return;}
+  const id=g.replace(/^#settings-?/,''),d=DEEP[id],el=/^#settings-/.test(g)&&d&&d[1]&&document.getElementById(d[1]);
+  if(el){if(!inSet)go('settings-'+id);setTimeout(()=>jumpTo(el),inSet?0:60);return;}
+  go(g.replace(/^#/,''));if(g==='#settings')setTimeout(()=>{const t=$('.sn.on');if(t)t.focus();},60);   // Settings: the keyboard on its open topic
+}
+// no link to where you already are ("Open Settings" while you're in Settings)
+const wnLinkable=g=>!!g&&!(g==='#settings'&&cur().startsWith('settings'));
+/* the gist in one line: one release's highlights, or the titles of several releases */
+function wnSummary(rels){
+  const n=rels.reduce((a,r)=>a+r.items.length,0);let bits,covered;
+  if(rels.length===1){const hs=rels[0].items.filter(i=>i.highlight).slice(0,3);bits=hs.map(i=>i.text+(i.keys?` (${i.keys.join('+')})`:''));covered=hs.length;}
+  else{const rs=rels.filter(r=>r.items.some(i=>i.highlight)).slice(0,3);bits=rs.map(r=>r.title);covered=rs.reduce((a,r)=>a+r.items.length,0);}
+  const rest=n-covered;return bits.join(' · ')+(rest?` · ${rest} more change${rest===1?'':'s'}`:'');
+}
+const wnKeys=ks=>ks?`<span class="wn-keys">${ks.map(k=>`<kbd>${esc(k)}</kbd>`).join('')}</span>`:'';
+
+/* ---------- the version in the title bar is the way in.
+   Unread notes turn "v0.4.6" into a small chip with a static dot, "Updated to 0.4.6"; hovering it gives the gist in one
+   line. Clicking it (or Enter) opens the notes in a popover under it; Settings → About Backtrack → What's new (also a
+   Find a setting result) opens the same popover next to that button. Opening counts as read, but what came with this
+   update stays the popover's content for the rest of the session (WN.mine), so a second look shows the same catch-up;
+   only the next launch falls back to the latest release. The chip changes back to "v0.4.6" when the popover closes,
+   and retires by itself 14 days after the update. */
+const WN_STALE=14*864e5,WN_CAP=8;   // a catch-up longer than WN_CAP+2 changes shows WN_CAP of them and folds the rest
+Object.assign(WN,{mine:null,from:''});
+function renderVer(){
+  const b=$('#appVer'),v=S.version;b.hidden=!v;if(!v)return;
+  const st=WN.st;if(wnUnread()&&st.updatedAt&&Date.now()-st.updatedAt>WN_STALE)markNotesRead();
+  const unread=wnUnread(),gist=unread?wnSummary(WN.list):'';
+  b.classList.toggle('new',unread);
+  b.textContent=unread?`Updated to ${v}`:`v${v}`;
+  b.dataset.tip=unread?gist:'What’s new';
+  b.setAttribute('aria-label',unread?`Updated to ${v}. What’s new${st.guess?'':` since ${st.seen}`}: ${gist}`:`Backtrack ${v}. See what’s new`);
+}
+const wnGoBtn=(it,links)=>{if(!wnLinkable(it.go))return '';links.push(it.go);return `<button class="wn-go" data-wngo="${links.length-1}">${esc(it.goLabel||'Show me')}${ic('chev-r','xs')}</button>`;};
+// ver: in a catch-up, each change says which version it came with, after its second line
+function wnItemHTML(it,links,ver){
+  const sub=[it.more?esc(it.more):'',ver?`<em class="wn-v">${it.more?' · ':''}${esc(it.v)}</em>`:''].join('');
+  return `<div class="wn-it"${it.small?' data-small hidden':''}><div class="wn-tx"><b>${esc(it.text)}${wnKeys(it.keys)}</b>${sub?`<span>${sub}</span>`:''}</div>${wnGoBtn(it,links)}</div>`;
+}
+/* one list for the whole span, sorted by what it means for you: New, then Improved, then Fixed (highlights first, newest
+   first). A long catch-up keeps its highlights and the newest smaller changes, about 8, and folds the rest: the footer's
+   "N smaller changes" shows them in place. → { html, nSmall } */
+function wnGroups(rels,links){
+  const ver=rels.length>1,all=[];rels.forEach(r=>r.items.forEach(it=>all.push(Object.assign({v:r.version},it))));
+  all.sort((a,b)=>(b.highlight?1:0)-(a.highlight?1:0)||vcmp(b.v,a.v));
+  if(all.length>WN_CAP+2){const keep=Math.max(WN_CAP,all.filter(x=>x.highlight).length);all.forEach((it,i)=>{it.small=i>=keep;});}
+  return {nSmall:all.filter(x=>x.small).length,html:['new','improved','fixed'].map(k=>{const its=all.filter(x=>x.kind===k);if(!its.length)return '';
+    return `<section class="wn-k" data-k="${k}" aria-label="${KIND[k]}"${its.every(x=>x.small)?' data-small hidden':''}><h3 class="cap">${KIND[k]}</h3>${its.map(it=>wnItemHTML(it,links,ver)).join('')}</section>`;}).join('')};
+}
+// the releases before these, compact, by version (with their links)
+function wnEarlierHTML(rels,links){
+  return rels.map(r=>`<section class="wn-rel" aria-label="Version ${esc(r.version)}"><div class="wn-rel-h"><b>${esc(r.version)}</b><span>${relDate(r.date,true)} · ${esc(r.title)}</span></div>`+
+    `<ul>${r.items.map(it=>`<li><em>${KIND[it.kind]}</em><span>${esc(it.text)}</span>${wnGoBtn(it,links)}</li>`).join('')}</ul></section>`).join('');
+}
+/* where it opens: under the chip; under or over any other button (right-aligned to it) when it fits, else beside it on
+   the left, as tall as the window allows. Always inside the window; the body scrolls when it has to. */
+function wnPlace(p,b){
+  p.style.maxHeight='';   // measured afresh: it's placed again when Earlier versions or the smaller changes open
+  const r=b.getBoundingClientRect(),M=8,T=44,W=innerWidth,H=innerHeight,w=p.offsetWidth,h=p.offsetHeight;
+  if(b.id==='appVer'){p.style.left=Math.max(M,r.left)+'px';p.style.top=(r.bottom+6)+'px';p.style.maxHeight=(H-r.bottom-14)+'px';return;}
+  const x=clamp(r.right-w,M,W-w-M);
+  if(r.bottom+6+h<=H-M){p.style.left=x+'px';p.style.top=(r.bottom+6)+'px';return;}
+  if(r.top-6-h>=T){p.style.left=x+'px';p.style.top=(r.top-6-h)+'px';return;}
+  const mh=H-T-M,h2=Math.min(h,mh);p.style.maxHeight=mh+'px';
+  p.style.left=clamp(r.left-8-w,M,W-w-M)+'px';p.style.top=clamp(r.top+r.height/2-h2/2,T,H-M-h2)+'px';
+}
+/* b: the button that opened it (the chip, or What's new in Settings); Esc gives the focus back to it */
+function openNotes(b=$('#appVer')){
+  const wasOpen=popEl&&popEl.classList.contains('wn')&&popEl.wnFor===b;
+  if(wasOpen){closePop();return;}
+  if(!WN.mine&&wnUnread()){WN.mine=WN.list.slice();WN.from=WN.st.guess?'':WN.st.seen;}   // what came with this update, for the whole session
+  const v=S.version,mine=WN.mine&&WN.mine.length?WN.mine:null,rels=mine||[wnLatest()].filter(Boolean),from=WN.from;
+  const older=NOTES.filter(r=>!rels.includes(r)&&vcmp(r.version,v)<=0),links=[],many=!!mine&&rels.length>1;
+  const title=many?`What’s new since ${from}`:`What’s new in ${rels[0]?rels[0].version:v}`;
+  const meta=mine?(many?`${nUpdates(rels.length)}, ${rels[rels.length-1].version} to ${rels[0].version}`:`${from?`Updated from ${from}`:'Just updated'} · ${relDate(rels[0].date)}`)
+    :rels[0]?`${relDate(rels[0].date,true)} · ${rels[0].title}`:'';
+  const p=document.createElement('div');p.className='pop wn';p.setAttribute('role','dialog');p.setAttribute('aria-labelledby','wnTitle');p.tabIndex=-1;
+  const grp=wnGroups(rels,links),smallLbl=`${grp.nSmall} smaller change${grp.nSmall===1?'':'s'}`;
+  p.innerHTML=`<div class="wn-h"><span class="m-ico">${ic('spark')}</span><div class="wn-ht"><b id="wnTitle">${esc(title)}</b>`+
+    (many?`<span class="wn-sum">${esc(wnSummary(rels))}</span>`:'')+`<span>${esc(meta)}</span></div>`+
+    `<button class="icon-btn wn-x" aria-label="Close" data-tip="Close · Esc" data-tip-pos="l">${ic('x','sm')}</button></div>`+
+    `<div class="wn-body">${grp.html}<div class="wn-older" id="wnOlder" hidden>${wnEarlierHTML(older,links)}</div></div>`+
+    (grp.nSmall||older.length?`<div class="wn-foot">`+
+      (grp.nSmall?`<button class="wn-more" id="wnSmaller" aria-expanded="false" data-lbl="${smallLbl}"><span>${smallLbl}</span>${ic('chev-d','xs')}</button>`:'')+
+      (older.length?`<button class="wn-more" id="wnMore" aria-expanded="false" aria-controls="wnOlder"><span>Earlier versions</span><i class="wn-n">${older.length}</i>${ic('chev-d','xs')}</button>`:'')+`</div>`:'');
+  placePop(p,b,'left');p.wnFor=b;b.setAttribute('aria-expanded','true');wnPlace(p,b);
+  markNotesRead();   // opening it is reading it; the chip changes back once the popover closes, not under the pointer
+  p.onclose=()=>{b.setAttribute('aria-expanded','false');renderVer();};
+  const focusables=()=>$$('button',p).filter(shown);
+  p.addEventListener('keydown',e=>{
+    if(e.key==='Escape'){e.preventDefault();e.stopPropagation();closePop();b.focus();return;}
+    if(e.key==='Tab'){const f=focusables(),i=f.indexOf(document.activeElement);if(!f.length)return;   // Tab stays in the notes
+      if(i<0||(e.shiftKey&&i===0)||(!e.shiftKey&&i===f.length-1)){e.preventDefault();f[i<0?(e.shiftKey?f.length-1:0):e.shiftKey?f.length-1:0].focus();}}
+  });
+  p.addEventListener('click',e=>{
+    if(e.target.closest('.wn-x')){closePop();b.focus();return;}
+    const sm=e.target.closest('#wnSmaller');if(sm){const open=sm.getAttribute('aria-expanded')!=='true',hid=$$('[data-small]',p);hid.forEach(x=>x.hidden=!open);
+      sm.setAttribute('aria-expanded',open);$('span',sm).textContent=open?'Fewer changes':sm.dataset.lbl;
+      wnPlace(p,b);const first=open&&hid.find(x=>x.classList.contains('wn-it'));if(first)first.scrollIntoView({block:'nearest'});return;}
+    const m=e.target.closest('#wnMore');if(m){const o=$('#wnOlder',p),open=o.hidden;o.hidden=!open;m.setAttribute('aria-expanded',open);
+      $('span',m).textContent=open?'Hide earlier versions':'Earlier versions';$('.wn-n',m).hidden=open;wnPlace(p,b);if(open)o.scrollIntoView({block:'start'});return;}
+    const g=e.target.closest('[data-wngo]');if(g){const to=links[+g.dataset.wngo];closePop();wnGo(to);}
+  });
+  p.focus({preventScroll:true});
+}
+$('#appVer').addEventListener('click',()=>openNotes());
+$('#setNotes').addEventListener('click',e=>openNotes(e.currentTarget));
+BT.notesState().then(st=>{wnApply(st);renderVer();}).catch(e=>BT.log('warn','notes_state failed: '+errMsg(e)));
+
+BT.appVersion().then(v=>{S.version=v||'';renderVer();if(cur().startsWith('settings'))renderSettings();}).catch(()=>{});
 
 renderSide();
 loadAll();

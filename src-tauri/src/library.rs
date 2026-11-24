@@ -126,13 +126,6 @@ fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
     std::fs::read_to_string(path).ok().and_then(|t| serde_json::from_str(&t).ok()).unwrap_or_default()
 }
 
-fn write_json_atomic<T: Serialize>(path: &Path, value: &T) -> Result<(), String> {
-    let text = serde_json::to_string(value).map_err(|e| e.to_string())?;
-    let tmp = path.with_extension("tmp");
-    std::fs::write(&tmp, text).map_err(|e| e.to_string())?;
-    std::fs::rename(&tmp, path).map_err(|e| e.to_string())
-}
-
 impl Library {
     pub fn load() -> Library {
         Library {
@@ -147,7 +140,7 @@ impl Library {
     }
 
     fn save_store(&self, store: &Store) {
-        if let Err(e) = write_json_atomic(&util::data_dir().join("store.json"), store) {
+        if let Err(e) = util::write_json_atomic(&util::data_dir().join("store.json"), store) {
             util::log("error", &format!("saving store.json: {e}"));
         }
     }
@@ -238,7 +231,7 @@ impl Library {
             // New probes in, files that no longer exist out; written only if that changed anything.
             let live: std::collections::HashSet<&str> = found.iter().map(|f| f.key.as_str()).collect();
             if update_index(&mut index, results.into_inner().unwrap(), &live) {
-                if let Err(e) = write_json_atomic(&util::cache_dir().join("index.json"), &*index) {
+                if let Err(e) = util::write_json_atomic(&util::cache_dir().join("index.json"), &*index) {
                     util::log("error", &format!("saving index.json: {e}"));
                 }
             }

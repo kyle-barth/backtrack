@@ -238,6 +238,21 @@ pub fn play_chime() {
     }
 }
 
+/// Whether a game seems to be in front, for things that shouldn't happen mid-match (installing an update, the "updated"
+/// pop-up): a game running exclusive full screen, a known game in front, or a window covering its whole monitor
+/// (borderless full screen) that isn't an app that's never a game (a browser playing a video full screen, say).
+pub fn game_in_front() -> bool {
+    if exclusive_fullscreen() {
+        return true;
+    }
+    let Some(fg) = foreground() else { return false };
+    let stem = Path::new(&fg.exe).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) {
+        return false;
+    }
+    KNOWN.iter().any(|(s, _)| *s == stem) || fullscreen_monitor().is_some()
+}
+
 /// Whether Windows says a game is running exclusive full screen (it then holds notifications back too). Any window
 /// shown on top of such a game, even a click-through one that never takes focus, makes it minimize. A borderless
 /// full-screen game is an ordinary window, so a pop-up can sit on top of it.
