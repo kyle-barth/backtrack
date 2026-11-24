@@ -141,10 +141,11 @@ function placePop(p,anchor,align,at){
   p.style.left=x+'px';p.style.top=Math.max(8,y)+'px';
   setTimeout(()=>document.addEventListener('pointerdown',function h(e){if(popEl&&!popEl.contains(e.target)&&!(anchor&&anchor.contains(e.target))){closePop();}document.removeEventListener('pointerdown',h);},{once:true}),0);
 }
-/* items: {label, sub, icon, on, right, disabled} or {sep:true}; o = {head: html, cls} */
+/* items: {label, tag, sub, icon, on, right, disabled} or {sep:true}; o = {head: html, cls, radio}. radio: a single choice (menuitemradio + aria-checked) */
 function openPop(anchor,items,onPick,align='left',at,o={}){
   closePop();const p=document.createElement('div');p.className='pop'+(o.cls?' '+o.cls:'');p.setAttribute('role','menu');
-  p.innerHTML=(o.head?`<div class="pop-head">${o.head}</div>`:'')+items.map((it,i)=>it.sep?'<div class="pop-sep"></div>':`<button data-i="${i}" role="menuitem"${it.disabled?' disabled':''}><span class="ck">${it.on?ic('check','sm'):it.icon?ic(it.icon,'sm'):''}</span><span class="pm">${esc(it.label)}${it.sub?`<small>${esc(it.sub)}</small>`:''}</span>${it.right?`<em>${esc(it.right)}</em>`:''}</button>`).join('');
+  if(o.radio&&anchor)p.setAttribute('aria-label',anchor.getAttribute('aria-label')||'');
+  p.innerHTML=(o.head?`<div class="pop-head">${o.head}</div>`:'')+items.map((it,i)=>it.sep?'<div class="pop-sep"></div>':`<button data-i="${i}" ${o.radio?`role="menuitemradio" aria-checked="${!!it.on}"`:'role="menuitem"'}${it.disabled?' disabled':''}><span class="ck">${it.on?ic('check','sm'):it.icon?ic(it.icon,'sm'):''}</span><span class="pm">${esc(it.label)}${it.tag?`<span class="tag">${esc(it.tag)}</span>`:''}${it.sub?`<small>${esc(it.sub)}</small>`:''}</span>${it.right?`<em>${esc(it.right)}</em>`:''}</button>`).join('');
   placePop(p,anchor,align,at);
   p.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const it=items[+b.dataset.i];closePop();onPick(it);});
   return p;
@@ -304,7 +305,7 @@ function heroHTML(){
 }
 function ffBanner(){
   if(!S.settings||S.settings.ffmpegPath)return '';
-  return `<div class="banner">${ic('alert','lg')}<div class="bt"><b>FFmpeg not found</b>Exports, waveforms and the audio preview need it. Install it with <code>winget install Gyan.FFmpeg.Essentials</code>, then restart Backtrack.</div><button class="btn sm" data-go="settings">Settings</button></div>`;
+  return `<div class="banner">${ic('alert','lg')}<div class="bt"><b>FFmpeg not found</b>Exports, waveforms and the audio preview need it. Install it with <code>winget install Gyan.FFmpeg.Essentials</code>, then restart Backtrack.</div><button class="btn sm" data-go="settings-exports">Settings</button></div>`;
 }
 /* phase 2: the recorder's folder is always a clip folder, so "empty" means nothing recorded and nothing found elsewhere */
 function emptyHTML(){
@@ -1736,10 +1737,12 @@ $('#scrim').addEventListener('click',()=>{if($('#modal').dataset.view!=='progres
 
 /* ================================================================== SETTINGS */
 const DEF_HINT={d10:'Discord free · 10 MB',d50:'Nitro Basic · 50 MB',d500:'Nitro · 500 MB',orig:'Original quality · no re-encode'};
-let setQ=Promise.resolve();
+let setQ=Promise.resolve(),recLater=null;
 /* optimistic: the UI updates at once, save_settings confirms (and may normalise), failures roll back */
 function saveSettings(patch,okToast){
-  const prev=S.settings,next=Object.assign({},prev,patch);S.settings=next;afterSettings();
+  // a recorder choice still waiting for the arrow keys to stop (saveRecorderSoon) goes along with this save
+  const l=recLater;if(l){clearTimeout(l.t);recLater=null;}
+  const prev=l?l.prev:S.settings,next=Object.assign({},S.settings,patch);S.settings=next;afterSettings();
   // a recorder error that just arrived (e.g. the chosen encoder isn't available) keeps its toast
   setQ=setQ.then(()=>BT.saveSettings(next)).then(s=>{S.settings=s;afterSettings();if(okToast&&!(REC.errAt&&Date.now()-REC.errAt<2500))toast(...okToast);},
     e=>{S.settings=prev;afterSettings();fail("Couldn't save settings",e);});
@@ -1756,19 +1759,39 @@ function folderStats(d){
   const cs=S.clips.filter(c=>under(c.path,d));
   return cs.length?`${cs.length} clip${cs.length===1?'':'s'} · ${fmtTotal(cs.reduce((a,c)=>a+c.sizeBytes,0))}`:'No clips found here yet';
 }
-const sameDir=(a,b)=>String(a||'').replace(/[\\/]+$/,'').toLowerCase()===String(b||'').replace(/[\\/]+$/,'').toLowerCase();
+const dirKey=d=>String(d||'').replace(/[\\/]+$/,'').toLowerCase();
+const sameDir=(a,b)=>dirKey(a)===dirKey(b);
+/* A folder of yours with no clips in it is most likely one that was moved or deleted: it says so, in amber, and the nav counts it.
+   Not a folder added in this session: that one says "Looking for clips…" until a rescan that started after it was saved has
+   finished (scanDone, see refetch), then its count, or "No clips found here yet". */
+const addedDirs=new Map();let scanStarted=0,scanDone=0;
+function folderState(d){
+  const r=S.settings.recorder,own=!!r&&sameDir(d,r.clipsDir),a=addedDirs.get(dirKey(d));
+  return {own,scanning:!!a&&scanDone<a.need,gone:!own&&!a&&S.loaded&&!S.clips.some(c=>under(c.path,d))};
+}
+// a row redrawn under the keyboard focus gives it back to the same control (or, if that row went, to the next one)
+function keepFocus(box,attrs,html,fallback){
+  const a=document.activeElement,k=box.contains(a)&&attrs.find(x=>a.hasAttribute(x)),v=k&&a.getAttribute(k);
+  setHTML(box,html);
+  if(k&&!box.contains(document.activeElement)){const t=$(`[${k}="${CSS.escape(v)}"]`,box)||fallback();if(t)t.focus({preventScroll:true});}
+}
 function renderSettings(){
   const s=S.settings;if(!s)return;const r=s.recorder;
   const ff=s.ffmpegPath;
-  $('#ffStatus').innerHTML=ff?`${ic('check-c','ok')}<div><b>FFmpeg ready</b><span title="${esc(ff)}">${esc(shortPath(ff,48))}</span></div>`
-    :`${ic('alert','warn')}<div><b>FFmpeg not found</b><span>Exports need it · winget install Gyan.FFmpeg.Essentials</span></div>`;
-  // the recorder's own folder is always in clipDirs (the backend re-adds it), so it can't be removed here
-  $('#folderRows').innerHTML=s.clipDirs.length?s.clipDirs.map((d,i)=>{const own=r&&sameDir(d,r.clipsDir);
-    return `<div class="srow"><span class="src-ico" style="--c:var(${own?'--rec':'--accent'})">${ic(own?'replay':'folder')}</span><div class="sl"><b class="fp" title="${esc(d)}">${esc(d)}</b><span>${own?'Your Backtrack recordings · ':''}${folderStats(d)}</span></div><button class="btn sm" data-fopen="${i}">Open</button>${own?`<button class="icon-btn" disabled aria-hidden="true" style="visibility:hidden">${ic('x')}</button>`:`<button class="icon-btn" data-fdel="${i}" data-tip="Stop showing these clips" aria-label="Remove ${esc(d)}">${ic('x')}</button>`}</div>`;}).join('')
-    :`<div class="srow"><span class="src-ico" style="--c:var(--warn)">${ic('alert')}</span><div class="sl"><b>No clip folder yet</b><span>Add your SteelSeries Moments folder to see your clips</span></div></div>`;
+  $('#ffStatus').innerHTML=ff?`${ic('check-c','ok')}<div><b>FFmpeg ready</b><span title="${esc(ff)}">${esc(shortPath(ff,64))}</span></div>`
+    :`${ic('alert','warn')}<div><b>FFmpeg not found</b><span>Exports need it. Install it with <code>${FF_CMD}</code>, then restart Backtrack.</span></div>`;
+  $('#s-ffmpeg').classList.toggle('bad',!ff);hideKeep($('#ffCopy'),!!ff,()=>$('#h-exports'));
+  // the recorder's own folder is always in clipDirs (the backend re-adds it), so it can't be removed here;
+  // a missing one can't be opened, so its only action is Remove (what its line tells you to do)
+  keepFocus($('#folderRows'),['data-fdel','data-fopen'],s.clipDirs.length?s.clipDirs.map((d,i)=>{const f=folderState(d);
+    return `<div class="srow" data-find="clip folder library storage disk space"><span class="src-ico" style="--c:var(${f.own?'--rec':f.gone?'--warn':'--accent'})">${ic(f.own?'replay':f.gone?'alert':'folder')}</span><div class="sl"><b class="fp" title="${esc(d)}">${esc(d)}</b><span>${f.own?'Your Backtrack recordings · ':''}${f.gone?'No clips found here. If you moved this folder, remove it and add its new place.':f.scanning?'Looking for clips…':folderStats(d)}</span></div>`+
+      (f.gone?`<button class="btn sm" data-fdel="${i}" aria-label="Remove ${esc(d)}">Remove</button>`:`<button class="btn sm" data-fopen="${i}" aria-label="Open ${esc(d)}">Open</button>`+(f.own?`<button class="icon-btn" disabled aria-hidden="true" style="visibility:hidden">${ic('x')}</button>`:`<button class="icon-btn" data-fdel="${i}" data-tip="Stop showing these clips" aria-label="Remove ${esc(d)}">${ic('x')}</button>`))+'</div>';}).join('')
+    :`<div class="srow"><span class="src-ico" style="--c:var(--warn)">${ic('alert')}</span><div class="sl"><b>No clip folder yet</b><span>Add your SteelSeries Moments folder to see your clips</span></div></div>`,()=>$('#addFolder'));
   $$('[data-set="defpreset"] button').forEach(b=>b.classList.toggle('on',b.dataset.v===s.defaultPreset));
   $('#defHint').textContent=s.defaultPreset==='custom'?`Custom · ${fmtNum(s.customMb)} MB`:DEF_HINT[s.defaultPreset]||'';
   const cm=$('#customMbSet');if(document.activeElement!==cm)cm.value=fmtNum(s.customMb);
+  $('#customRow').classList.toggle('dim',s.defaultPreset!=='custom');
+  $('#exWhere').textContent=shortPath(s.exportDir,44);$('#exWhere').title=s.exportDir;
   $$('[data-sw="autocopy"]').forEach(x=>{x.classList.toggle('on',!!s.autoCopy);x.setAttribute('aria-checked',!!s.autoCopy);});
   $$('[data-set="quicklen"] button').forEach(b=>b.classList.toggle('on',+b.dataset.v===+s.quickLen));
   $('#exDir').textContent=shortPath(s.exportDir,30);$('#exDirBox').title=s.exportDir;
@@ -1777,12 +1800,12 @@ function renderSettings(){
   if(r){
     $$('.seg[data-rec]').forEach(seg=>{const k=seg.dataset.rec;$$('button',seg).forEach(b=>b.classList.toggle('on',+b.dataset.v===+r[k]));});
     $$('[data-rsw]').forEach(x=>{const on=!!r[x.dataset.rsw];x.classList.toggle('on',on);x.setAttribute('aria-checked',on);});
-    $('#ramHint').textContent=`Last ${fmtBuf(r.bufferSecs)} · ≈ ${fmtMem(r.bitrateMbps*r.bufferSecs/8)} of RAM`;
+    $('#ramHint').textContent=`Last ${fmtBuf(r.bufferSecs)} · ≈ ${fmtMem(r.bitrateMbps*r.bufferSecs/8)} of RAM when full`;
     $('#rateHint').textContent=`${RATE_NAME[r.bitrateMbps]||'Custom'} · ≈ ${fmtMem(r.bitrateMbps*60/8)} per minute`;
     const mon=monitorOf(r.monitor);
     $('#resHint').textContent=mon?(r.resolution&&r.resolution>Math.min(mon.width,mon.height)?`Above your display (${mon.width} × ${mon.height}), so it records at native size`:`Your display is ${mon.width} × ${mon.height}`):'';
     $('#monDdTxt').textContent=mon?monLabel(mon):`Monitor ${r.monitor+1}`;
-    $$('[data-enc]').forEach(b=>{const on=b.dataset.enc===r.encoder;b.classList.toggle('on',on);b.setAttribute('aria-checked',on);b.setAttribute('role','radio');});
+    $('#encDdTxt').textContent=encName(r.encoder);$('#encDd').dataset.enc=r.encoder;
     $('#gameSrcTxt').textContent=r.chatApp?`All apps except ${r.chatApp}`:'All apps';
     $('#chatDdTxt').textContent=r.chatApp||'None';
     $('#micDdTxt').textContent=micLabel(r.micDevice);$('#micDd').style.opacity=r.micEnabled?'':'.55';
@@ -1794,8 +1817,65 @@ function renderSettings(){
   }
   syncBufferSwitches();
   renderRecLive();
-  $('#setFoot').innerHTML=`<b>Backtrack${S.version?' '+esc(S.version):''}</b><br>Records, edits and shares your clips`;
+  setHTML($('#setFoot'),`<b>Backtrack${S.version?' '+esc(S.version):''}</b><span>Records, edits and shares your clips</span>`);
+  syncRadios();
 }
+const FF_CMD='winget install Gyan.FFmpeg.Essentials';
+// hiding a button that has the keyboard focus hands the focus on first, so it never falls to <body>
+function hideKeep(el,hide,to){if(hide&&!el.hidden&&el.contains(document.activeElement)){const t=to();if(t)t.focus({preventScroll:true});}el.hidden=hide;}
+$('#recRetry').addEventListener('click',()=>setBufferEnabled(true));
+// the error is the encoder's: open the encoder menu (Esc returns to it)
+$('#recFixEnc').addEventListener('click',()=>{const d=$('#encDd');flashRow(d.closest('.srow'));d.click();});
+$('#ffCopy').addEventListener('click',()=>{
+  const done=()=>toast('Copied · paste it into a terminal, then restart Backtrack','copy');
+  const old=()=>{const t=document.createElement('textarea');t.value=FF_CMD;t.style.cssText='position:fixed;opacity:0';document.body.append(t);t.select();const ok=document.execCommand('copy');t.remove();ok?done():toast(`Couldn't copy · type ${FF_CMD}`,'alert');};
+  (navigator.clipboard?navigator.clipboard.writeText(FF_CMD):Promise.reject()).then(done,old);
+});
+/* segmented controls are radio groups: one Tab stop each, arrows move and choose */
+function syncRadios(){
+  $$('.set .seg').forEach(g=>{g.setAttribute('role','radiogroup');const bs=$$('button',g),on=bs.find(b=>b.classList.contains('on'))||bs[0];
+    bs.forEach(b=>{b.setAttribute('role','radio');b.setAttribute('aria-checked',b.classList.contains('on'));b.tabIndex=b===on?0:-1;});});
+}
+document.addEventListener('keydown',e=>{
+  const b=e.target.closest&&e.target.closest('.set [role=radio]');if(!b||e.altKey||e.ctrlKey||e.metaKey||!/^(ArrowLeft|ArrowRight|ArrowUp|ArrowDown|Home|End)$/.test(e.key))return;
+  const g=b.closest('[role=radiogroup]'),bs=$$('[role=radio]',g),i=bs.indexOf(b),n=bs.length;
+  const j=e.key==='Home'?0:e.key==='End'?n-1:/Right|Down/.test(e.key)?(i+1)%n:(i-1+n)%n;
+  e.preventDefault();bs[j].focus();
+  // a recorder choice restarts the buffer: arrowing past three values shows each at once but saves only the last
+  if(g.matches('[data-rec]'))pickRec(g,bs[j],true);else bs[j].click();
+});
+/* the settings dropdowns: the open menu takes focus on the current choice; arrows move, Esc or Tab closes it, focus goes back */
+function popKeys(p,anchor){
+  const bs=$$('button:not([disabled])',p);(bs.find(b=>b.querySelector('use[href="#i-check"]'))||bs[0]).focus();
+  p.addEventListener('keydown',e=>{const i=bs.indexOf(document.activeElement);
+    if(/^(ArrowDown|ArrowUp|Home|End)$/.test(e.key)){e.preventDefault();bs[e.key==='Home'?0:e.key==='End'?bs.length-1:(i+(e.key==='ArrowDown'?1:-1)+bs.length)%bs.length].focus();}
+    else if(e.key==='Escape'||e.key==='Tab'){e.preventDefault();e.stopPropagation();closePop();anchor.focus();}});
+  p.addEventListener('click',()=>anchor.focus());
+}
+/* the nav carries what needs attention: the buffer's state, a hotkey that isn't working, FFmpeg missing, a clip folder gone */
+function renderSetNav(){
+  const s=S.settings,st=REC.status,r=recCfg();if(!s)return;
+  const state=st&&r?(restarting(st)?'restarting':st.state):'';
+  setHTML($('#snRec'),state==='on'?'<span class="rec-dot"></span>On':state==='error'?`${ic('alert','xs')}Error`:state==='restarting'?'<span class="rec-dot starting"></span>Restarting':state==='starting'?'<span class="rec-dot starting"></span>Starting':state==='off'?'<span class="rec-dot off"></span>Off':'');
+  $('#snRec').classList.toggle('warn',state==='error');hideKeep($('#recRetry'),state!=='error',()=>$('.rec-banner .switch'));
+  const bad=r?HK.filter(([a])=>{const h=hkState(a);return h&&!h.ok;}).length:0;
+  setHTML($('#snHk'),bad?`${ic('alert','xs')}${bad===1?'1 problem':bad+' problems'}`:'');
+  setHTML($('#snEx'),s.ffmpegPath?'':`${ic('alert','xs')}No FFmpeg`);
+  const miss=s.clipDirs.filter(d=>folderState(d).gone).length;
+  setHTML($('#snFo'),miss?`${ic('alert','xs')}${miss} missing`:'');
+}
+/* Buffer length, resolution, frame rate and bitrate: a click, Space or Enter saves at once; arrow keys (soon) show the
+   choice at once (hints, pill) and save 400 ms after the last key, so the buffer restarts once, not once per step */
+function pickRec(s,b,soon){
+  const r=recCfg();if(!b||!r)return;const k=s.dataset.rec,v=+b.dataset.v;
+  if(+r[k]===v){if(!soon)flushRec();return;}
+  const msg={bufferSecs:`Replay buffer keeps the last ${fmtBuf(v)} · ≈ ${fmtMem(r.bitrateMbps*v/8)} of RAM`,resolution:v?`Recording at ${v}p`:'Recording at your monitor’s native size',fps:`Recording at ${v} fps`,bitrateMbps:`Recording at ${v} Mbps`}[k]+(r.enabled?' · the buffer restarted':'');
+  if(!soon){saveRecorder({[k]:v},[msg,'replay']);return;}
+  const l=recLater||(recLater={prev:S.settings});clearTimeout(l.t);l.msg=msg;
+  S.settings=Object.assign({},S.settings,{recorder:Object.assign({},r,{[k]:v})});afterSettings();
+  l.t=setTimeout(flushRec,400);
+}
+function flushRec(){const l=recLater;if(l)saveSettings({},[l.msg,'replay']);}
 $$('.seg[data-set]').forEach(s=>s.addEventListener('click',e=>{const b=e.target.closest('button');if(!b)return;const k=s.dataset.set,v=b.dataset.v;
   if(k==='defpreset'&&v!==S.settings.defaultPreset){saveSettings({defaultPreset:v},[`E now exports at ${v==='custom'?`Custom · ${fmtNum(S.settings.customMb)} MB`:DEF_HINT[v]}`,'upload']);}
   else if(k==='quicklen'&&+v!==S.settings.quickLen){saveSettings({quickLen:+v},[`Quick send now exports ${v} s`,'bolt']);}}));
@@ -1806,7 +1886,10 @@ $('#addFolder').addEventListener('click',async()=>{
   let p;try{p=await BT.pickFolder({title:'Choose a clip folder'});}catch(e){fail("Couldn't open the folder picker",e);return;}
   if(!p)return;
   if(S.settings.clipDirs.some(d=>sameDir(d,p))){toast('That folder is already in the list','folder');return;}
-  saveSettings({clipDirs:[...S.settings.clipDirs,p]},[`Added ${shortPath(p,40)} · looking for clips`,'folder']);
+  // new this session: neutral, "Looking for clips…" until the rescan that follows the save is done (at most 10 s)
+  const a={need:Infinity};addedDirs.set(dirKey(p),a);
+  saveSettings({clipDirs:[...S.settings.clipDirs,p]},[`Added ${shortPath(p,40)} · looking for clips`,'folder'])
+    .then(()=>{a.need=scanStarted+1;setTimeout(()=>{if(scanDone<a.need){a.need=0;afterSettings();}},10000);});
 });
 $('#folderRows').addEventListener('click',e=>{
   const o=e.target.closest('[data-fopen]');if(o){const d=S.settings.clipDirs[+o.dataset.fopen];if(d)BT.openPath(d).catch(err=>fail("Couldn't open the folder",err));return;}
@@ -1819,37 +1902,112 @@ $('#changeExDir').addEventListener('click',async()=>{
   let p;try{p=await BT.pickFolder({title:'Choose where exports go',defaultPath:S.settings.exportDir});}catch(e){fail("Couldn't open the folder picker",e);return;}
   if(p&&p!==S.settings.exportDir)saveSettings({exportDir:p},[`Exports now go to ${shortPath(p,40)}`,'folder']);
 });
-/* settings nav: click scrolls to the card; scroll-spy keeps the highlight in sync.
-   UX review r2 #1: with two columns, cards share a top, so a clicked item stays highlighted until the user scrolls 48 px. */
-let spyLock=0,spyHold=null;
-const SN=()=>$$('.sn').map(a=>a.dataset.sec);
-function setSn(id){$$('.sn').forEach(x=>x.classList.toggle('on',x.dataset.sec===id));}
-function spy(){
-  const sm=$('#setMain'),h=sm.clientHeight;if(!h||performance.now()<spyLock)return;
-  // the hold survives layout shifts (late data changing the page height); only the user's own scrolling releases it
-  if(spyHold){if(!spyHold.user||Math.abs(sm.scrollTop-spyHold.top)<=48){setSn(spyHold.id);return;}spyHold=null;}
-  const ids=SN(),top=sm.getBoundingClientRect().top,rs=ids.map(s=>{const r=document.getElementById(s).getBoundingClientRect();return {t:r.top-top,b:r.bottom-top};});let i;
-  // active = first card (in nav order) reaching into the top 45 %; at the very bottom, the first card of the last row
-  if(sm.scrollTop>4&&sm.scrollTop+h>=sm.scrollHeight-4){const m=Math.max(...rs.filter(r=>r.t<h-40).map(r=>r.t));i=rs.findIndex(r=>Math.abs(r.t-m)<6);}
-  else i=rs.findIndex(r=>r.b>8&&r.t<h*.45);
-  if(i>=0)setSn(ids[i]);
+/* settings pages: one topic at a time. The hash names the page (#settings-audio), so deep links and reloads land on it;
+   a deep link can also name a section on a page (#settings-capture is the replay buffer at the top of Recording). */
+const SPAGES=['recording','hotkeys','audio','exports','folders','app'];
+const DEEP={capture:['recording','s-capture'],recorder:['recording','s-capture'],buffer:['recording','s-buffer'],video:['recording','s-video'],quality:['recording','s-video'],encoder:['recording','s-encoder'],
+  export:['exports'],sharing:['exports'],ffmpeg:['exports','s-ffmpeg'],folders:['folders','s-folders'],storage:['folders','s-storage'],files:['folders','s-storage'],startup:['app'],updates:['app','s-updates']};
+let setPage='recording';
+function showSetPage(p){
+  if(!SPAGES.includes(p))p='recording';
+  const changed=p!==setPage;setPage=p;
+  $$('.set-page').forEach(x=>x.hidden=x.dataset.page!==p);
+  $$('.sn').forEach(x=>{const on=x.dataset.page===p;x.classList.toggle('on',on);if(on)x.setAttribute('aria-current','page');else x.removeAttribute('aria-current');});
+  rove($('#snList').contains(document.activeElement)?document.activeElement:$('.sn.on'));
+  if(changed)$('#setMain').scrollTop=0;
+  updateCrumb();
+  return changed;
 }
-{const io=new IntersectionObserver(()=>spy(),{root:$('#setMain'),rootMargin:'0px 0px -55% 0px',threshold:0});SN().forEach(s=>io.observe(document.getElementById(s)));}
-$('#setMain').addEventListener('scroll',spy,{passive:true});
-{const userScroll=()=>{if(spyHold&&!spyHold.user){spyHold.user=true;spyHold.top=$('#setMain').scrollTop;}};
-  ['wheel','pointerdown','touchstart'].forEach(ev=>$('#setMain').addEventListener(ev,userScroll,{passive:true}));
-  document.addEventListener('keydown',e=>{if(/^(PageUp|PageDown|ArrowUp|ArrowDown|Home|End| )$/.test(e.key)&&cur().startsWith('settings'))userScroll();},true);}
-const DEEP={export:'s-export',sharing:'s-sharing',folders:'s-folders',capture:'s-capture',buffer:'s-buffer',video:'s-video',encoder:'s-encoder',hotkeys:'s-hotkeys',audio:'s-audio',storage:'s-storage',files:'s-storage'};
+// the topic list is one Tab stop (roving tabindex): arrows, Home and End move, Enter or Space opens, Tab goes into the page
+function rove(b){$$('.sn').forEach(x=>x.tabIndex=x===b?0:-1);}
+function flashRow(el){if(!el)return;el.classList.add('hit');setTimeout(()=>el.classList.remove('hit'),1200);}
+/* open the page a row lives on, bring the row into view, flash it and put keyboard focus on its control (or on f) */
+function jumpTo(el,f){
+  const pg=el.closest('.set-page').dataset.page;openSetPage(pg);el.scrollIntoView({block:'center'});flashRow(el);
+  f=f||['[role=radio][tabindex="0"]','.switch','.dd:not(.static)','.keys','input','button:not([disabled]):not(.hk-clear)'].map(s=>$(s,el)).find(Boolean);
+  (f||$('#h-'+pg)).focus({preventScroll:true});
+}
+// quiet cross-links to where a setting lives: "Change in Folders" on Exports, "Mute hotkey Alt+F8" on the microphone
+$('#setMain').addEventListener('click',e=>{const x=e.target.closest('[data-jump],[data-jumphk]');if(!x)return;
+  if(x.dataset.jumphk){const row=$(`[data-hkrow="${x.dataset.jumphk}"]`);if(row)jumpTo(row,$('.keys',row));}
+  else{const row=document.getElementById(x.dataset.jump);if(row)jumpTo(row,$('button:last-of-type',row));}});
 function scrollSettingsTo(id,smooth){
-  id=DEEP[id]||id;
-  const t=document.getElementById(id);if(!t)return;const sm=$('#setMain');
-  const navId=id==='s-capture'?'s-buffer':id==='s-sharing'?'s-export':id;setSn(navId);
-  const target=clamp(sm.scrollTop+t.getBoundingClientRect().top-sm.getBoundingClientRect().top-16,0,Math.max(0,sm.scrollHeight-sm.clientHeight));
-  spyHold={id:navId,top:target};spyLock=performance.now()+(smooth?900:50);
-  sm.scrollTo({top:target,behavior:smooth?'smooth':'auto'});
-  if(smooth&&t.classList.contains('scard')){t.classList.add('flash');setTimeout(()=>t.classList.remove('flash'),900);}
+  const d=DEEP[id]||[SPAGES.includes(id)?id:'recording'];
+  showSetPage(d[0]);
+  const t=d[1]&&document.getElementById(d[1]),sm=$('#setMain');if(!t)return;
+  // the first thing on a page scrolls to the very top, so the page title stays in view
+  if(t.previousElementSibling&&t.previousElementSibling.classList.contains('pg-head'))sm.scrollTo({top:0,behavior:smooth?'smooth':'auto'});
+  else t.scrollIntoView({block:'start',behavior:smooth?'smooth':'auto'});
 }
-$$('.sn').forEach(a=>a.addEventListener('click',()=>scrollSettingsTo(a.dataset.sec,true)));
+function openSetPage(p){showSetPage(p);history.replaceState(null,'','#settings-'+p);}
+$$('.sn').forEach(b=>b.addEventListener('click',()=>openSetPage(b.dataset.page)));
+$('#snList').addEventListener('keydown',e=>{if(!/^(ArrowDown|ArrowUp|Home|End)$/.test(e.key))return;const bs=$$('.sn'),i=bs.indexOf(document.activeElement);if(i<0)return;
+  e.preventDefault();const t=bs[e.key==='Home'?0:e.key==='End'?bs.length-1:(i+(e.key==='ArrowDown'?1:-1)+bs.length)%bs.length];rove(t);t.focus();});
+// leaving the list, its Tab stop goes back to the topic that's open
+$('#snList').addEventListener('focusout',e=>{if(!$('#snList').contains(e.relatedTarget))rove($('.sn.on'));});
+
+/* Find a setting (Ctrl+K): every row on every page, matched on its label, its hint and a few extra words (data-find),
+   plus the words people use for it that count as much as its label (data-alias: "smaller" is Bitrate, "storage" is Save clips to).
+   Results replace the topic list while there's a query; Enter or a click opens the page, scrolls to the row,
+   highlights it briefly and puts keyboard focus on its control. */
+const findEl=$('#setFind'),findList=$('#setFindList');let findHits=[],findAt=0,findFrom=null;
+const pageName=p=>$(`.sn[data-page="${p}"] .sn-t`).textContent;
+function findItems(){
+  const seen=new Set();
+  return $$('.set-page .srow, .set-page [data-find]').filter(el=>!seen.has(el)&&seen.add(el)).map(el=>{
+    const pg=el.closest('.set-page').dataset.page,b=$('.sl b',el)||$('.status-card b',el),sec=el.closest('.sgrp'),sh=sec&&$('.sg-h',sec);
+    const label=(el.dataset.label||(b&&b.textContent)||'').trim(),secName=sh?sh.firstChild.textContent.trim():'';
+    const hint=[...$$('.sl>span,.status-card span',el)].map(x=>x.textContent).join(' ');
+    return {el,pg,label,where:pageName(pg)+(secName&&secName!==label?' · '+secName:''),alias:words(el.dataset.alias||''),hay:words(label,hint,el.dataset.find,secName)};
+  }).filter(x=>x.label);
+}
+const words=(...t)=>' '+t.join(' ').toLowerCase().replace(/[^a-z0-9+]+/g,' ')+' ';   // " frame rate 60 fps suits most games "
+// words that only carry the sentence ("make my clips smaller") are left out, unless they're all there is
+const FIND_SKIP=new Set('a an the my me i to of for in it is be can do how want make change set turn'.split(' '));
+const findWords=q=>{const qs=q.toLowerCase().split(/[^a-z0-9+]+/).filter(Boolean),k=qs.filter(w=>!FIND_SKIP.has(w));return k.length?k:qs;};
+function findRun(q){
+  const qs=findWords(q);
+  const items=[...SPAGES.map(p=>({page:p,label:pageName(p),where:'Page',hay:words(pageName(p),$(`.sn[data-page="${p}"]`).dataset.find)})),...findItems()];
+  // a word starting the label counts most, then a word anywhere in the label or its aliases, then in its hint or keywords; inside a word, least.
+  // Rows that match every word come first; when none does, the ones that match the most of them
+  const score=x=>{const l=words(x.label),al=x.alias||' ';let s=0,n=0;
+    for(const w of qs){const v=l.startsWith(' '+w)?5:l.includes(' '+w)||al.includes(' '+w)?4:x.hay.includes(' '+w)?2:l.includes(w)?1:0;if(v){s+=v;n++;}}
+    return {n,s:s+(n&&x.page?.5:0)};};
+  const hits=items.map(x=>Object.assign({x},score(x))).filter(o=>o.n),all=hits.some(o=>o.n===qs.length);
+  return hits.filter(o=>!all||o.n===qs.length).sort((a,b)=>b.n-a.n||b.s-a.s).slice(0,8).map(o=>o.x);
+}
+// the first of the words that appears in the label is highlighted
+const markHit=(t,ws)=>{const lt=t.toLowerCase(),w=ws.find(x=>lt.includes(x))||'',i=w?lt.indexOf(w):-1;return i<0?esc(t):esc(t.slice(0,i))+'<mark>'+esc(t.slice(i,i+w.length))+'</mark>'+esc(t.slice(i+w.length));};
+function renderFind(){
+  const q=findEl.value.trim(),on=!!q;
+  $('#snList').hidden=on;findList.hidden=!on;findEl.setAttribute('aria-expanded',on);$('#setFindX').hidden=!findEl.value;
+  if(!on){findHits=[];findEl.removeAttribute('aria-activedescendant');return;}
+  findHits=findRun(q);findAt=0;const ws=findWords(q);
+  findList.innerHTML=findHits.length?findHits.map((h,i)=>`<div class="fhit" role="option" id="fhit${i}" data-i="${i}" aria-selected="${i===0}"><b>${markHit(h.label,ws)}</b><span>${esc(h.where)}</span></div>`).join('')
+    :`<div class="find-none">Nothing matches “${esc(q)}”. Try a word like mic, folder or hotkey.</div>`;
+  syncFind();
+}
+function syncFind(){$$('.fhit',findList).forEach((o,i)=>o.setAttribute('aria-selected',i===findAt));
+  if(!findHits.length){findEl.removeAttribute('aria-activedescendant');return;}
+  findEl.setAttribute('aria-activedescendant','fhit'+findAt);
+  const o=$('#fhit'+findAt);if(o.offsetTop<findList.scrollTop)findList.scrollTop=o.offsetTop;else if(o.offsetTop+o.offsetHeight>findList.scrollTop+findList.clientHeight)findList.scrollTop=o.offsetTop+o.offsetHeight-findList.clientHeight;}
+function pickFind(i){
+  const h=findHits[i];if(!h)return;findEl.value='';renderFind();
+  if(h.page){openSetPage(h.page);$('#h-'+h.page).focus();return;}
+  jumpTo(h.el);
+}
+findEl.addEventListener('input',renderFind);
+// where the focus was before Ctrl+K, / or a click in the box: a second Esc goes back there (or to the open topic)
+findEl.addEventListener('focus',e=>{findFrom=e.relatedTarget;});
+findEl.addEventListener('keydown',e=>{
+  if((e.key==='ArrowDown'||e.key==='ArrowUp')&&findHits.length){e.preventDefault();findAt=(findAt+(e.key==='ArrowDown'?1:-1)+findHits.length)%findHits.length;syncFind();}
+  else if(e.key==='Enter'){e.preventDefault();pickFind(findAt);}
+  else if(e.key==='Escape'){e.preventDefault();e.stopPropagation();if(findEl.value){findEl.value='';renderFind();}
+    else{const t=findFrom&&findFrom!==findEl&&shown(findFrom)?findFrom:$('.sn.on');findFrom=null;t.focus();}}
+});
+findList.addEventListener('pointerdown',e=>e.preventDefault());   // keeps focus in the box
+findList.addEventListener('click',e=>{const o=e.target.closest('.fhit');if(o)pickFind(+o.dataset.i);});
+$('#setFindX').addEventListener('click',()=>{findEl.value='';renderFind();findEl.focus();});
 let lastMain='library';
 $('#setBack').addEventListener('click',()=>go(lastMain));
 $('#tbSettings').addEventListener('click',()=>go('settings'));
@@ -1933,7 +2091,7 @@ function openRecMenu(anchor){
   if(st.state==='error'||restarting(st))items.push({k:'restart',icon:'replay',label:'Restart Backtrack',sub:'Starts the app, recorder and window afresh'});
   items.push(st.state==='off'?{k:'on',icon:'power',label:'Turn on',right:hk.toggle}:{k:'off',icon:'power',label:'Turn off',sub:'The save hotkey stops working',right:hk.toggle});
   items.push({sep:true},{k:'settings',icon:'gear',label:'Recorder settings'});
-  openPop(anchor,items,it=>{
+  popKeys(openPop(anchor,items,it=>{
     if(it.k==='save')saveNow();
     else if(it.k==='mark')BT.addMarker().then(()=>toast('Marked · the next clip you save gets a marker here','flag'),e=>fail("Couldn't mark the moment",e));
     else if(it.k==='mic')toggleMic();
@@ -1941,7 +2099,7 @@ function openRecMenu(anchor){
     else if(it.k==='off')setBufferEnabled(false);
     else if(it.k==='restart')restartApp();
     else if(it.k==='settings')go('settings-capture');
-  },'left',null,{head:recHead(),cls:'recpop'});
+  },'left',null,{head:recHead(),cls:'recpop'}),anchor);   // the menu takes the keyboard focus; Esc gives it back to the pill
 }
 $('#bufferPill').addEventListener('click',e=>{const st=REC.status;if(!st)return;if(st.state==='off'&&!(popEl&&popEl.classList.contains('recpop'))){setBufferEnabled(true);return;}openRecMenu(e.currentTarget);});
 /* ---------- library sidebar card */
@@ -1986,7 +2144,7 @@ function renderRecLive(){
   let dot='off',title='Replay buffer',sub='Checking the recorder…';
   if(st){
     if(st.state==='on'){dot='';title='Replay buffer is running';sub=[st.game,encShort(st.encoder),`using ≈ ${fmtMem(st.memoryMb)} RAM`].filter(Boolean).join(' · ');}
-    else if(restarting(st)){dot='starting';title='Restarting the replay buffer…';sub=st.error;}
+    else if(restarting(st)){dot='starting';title='Restarting the replay buffer…';sub=st.error.replace(/\s*·\s*restarting\s*$/i,'');}   // the title already says it's restarting
     else if(st.state==='starting'){dot='starting';title='Starting the replay buffer…';sub=`Keeps the last ${fmtBuf(r.bufferSecs)} once it’s running`;}
     else if(st.state==='error'){dot='warn';title='Recorder error';sub=st.error||'Something went wrong';}
     else{title='Replay buffer is off';sub=`Turn it on to keep the last ${fmtBuf(r.bufferSecs)}`;}
@@ -1997,43 +2155,51 @@ function renderRecLive(){
     [...l.children].forEach((b,i)=>b.classList.toggle('on',i<n));l.style.opacity=t&&!t.active?'.4':'';});
   const chat=st&&st.tracks.find(t=>t.name==='Voice chat');
   $('#chatNote').textContent=!r.chatApp?'Off':chat&&!chat.active?`${r.chatApp} isn’t running`:'';
-  const mn=$('#micNote'),mh=!r.micEnabled?'Off':st&&st.micMuted?`<span class="trk warn" data-unmute role="button" tabindex="0" title="Click to unmute">Muted${r.hotkeys.muteMic?` · ${esc(r.hotkeys.muteMic)}`:''}</span>`:'';
-  if(mn.dataset.h!==mh){mn.innerHTML=mh;mn.dataset.h=mh;}
-  $('#encInUse').innerHTML=!st?'':st.state==='error'?`<span class="err-t">${esc(st.error||'Recorder error')}</span>`:esc(st.encoder||(st.state==='off'?'Nothing while the buffer is off':'Starting…'));
-  $('#encAutoSub').textContent=r.encoder==='auto'&&st&&st.encoder?`Uses ${st.encoder}`:'Picks the best one for this PC';
-  $$('[data-enc] .et>span').forEach(s=>s.classList.toggle('inuse',r.encoder==='auto'&&s.id==='encAutoSub'&&!!(st&&st.encoder)));
+  // the mic's note: Off, a Muted chip that unmutes, or a link to its mute hotkey on Hotkeys
+  const mk=r.hotkeys.muteMic,mh=!r.micEnabled?'Off':st&&st.micMuted?`<span class="trk warn" data-unmute role="button" tabindex="0" title="Click to unmute">Muted${mk?` · ${esc(mk)}`:''}</span>`:mk?`<button class="xlink" data-jumphk="muteMic" data-tip="Change it on Hotkeys">Mute hotkey ${esc(mk)}</button>`:'';
+  keepFocus($('#micNote'),['data-unmute','data-jumphk'],mh,()=>$('#micNote [tabindex],#micNote button')||$('[data-rsw="micEnabled"]'));
+  // the encoder row is the one place that spells out what it's recording with; an error that's the encoder's turns it amber
+  const encErr=!!st&&st.state==='error'&&/encoder|nvenc|amf|x264/i.test(st.error||'');
+  setHTML($('#encInUse'),!st?'':st.state==='error'?`<span class="err-t">Not recording · ${encErr?'pick another encoder':'see the error above'}</span>`:st.state==='on'?esc(st.encoder?`Recording with ${st.encoder}`:'Recording'):st.state==='off'?'Not recording while the replay buffer is off':restarting(st)?'Restarting…':'Starting…');
+  $('#encDd').classList.toggle('bad',encErr);hideKeep($('#recFixEnc'),!encErr,()=>$('#encDd'));
   if(hkSig()!==REC.hkSig)renderHotkeys();
+  renderSetNav();
 }
 $('#micNote').addEventListener('click',e=>{if(e.target.closest('[data-unmute]'))toggleMic();});
+$('#micNote').addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&e.target.closest('[data-unmute]')){e.preventDefault();toggleMic();}});
 /* ---------- settings: capture controls */
-$$('.seg[data-rec]').forEach(s=>s.addEventListener('click',e=>{
-  const b=e.target.closest('button'),r=recCfg();if(!b||!r)return;const k=s.dataset.rec,v=+b.dataset.v;if(+r[k]===v)return;
-  const msg={bufferSecs:`Replay buffer keeps the last ${fmtBuf(v)} · ≈ ${fmtMem(r.bitrateMbps*v/8)} of RAM`,resolution:v?`Recording at ${v}p`:'Recording at your monitor’s native size',fps:`Recording at ${v} fps`,bitrateMbps:`Recording at ${v} Mbps`}[k];
-  saveRecorder({[k]:v},[msg+(r.enabled?' · the buffer restarted':''),'replay']);
-}));
+$$('.seg[data-rec]').forEach(s=>s.addEventListener('click',e=>pickRec(s,e.target.closest('button'),false)));
 $$('[data-rsw]').forEach(x=>x.addEventListener('click',()=>{
   const k=x.dataset.rsw,r=recCfg();if(!r)return;const v=!r[k];
   const msg={confirm:v?'You’ll see a pop-up when a clip is saved':'No pop-up when a clip is saved',micEnabled:v?'The mic is recorded again':'The mic isn’t recorded any more',startWithWindows:v?'Backtrack starts with Windows, in the tray':'Backtrack won’t start with Windows',autoUpdate:v?'Backtrack updates itself when it starts':'Backtrack won’t check for updates'}[k];
   saveRecorder({[k]:v},[msg,k==='micEnabled'?(v?'mic':'vol-x'):'check']);
 }));
-$$('[data-enc]').forEach(b=>b.addEventListener('click',()=>{const r=recCfg(),v=b.dataset.enc;if(!r||r.encoder===v)return;saveRecorder({encoder:v},[`Encoder: ${$('b',b).firstChild.textContent.trim()}`,'chip']);}));
+/* the encoder: a dropdown like the monitor's; each choice keeps its data-enc value (the saved setting) */
+const ENC=[['auto','Automatic','Picks the best one for this PC','Best'],['amf','AMD AMF','Radeon graphics cards'],['nvenc','NVIDIA NVENC','GeForce graphics cards'],['x264','CPU (x264)','Works anywhere · uses more CPU']];
+const encName=v=>(ENC.find(x=>x[0]===v)||ENC[0])[1];
+$('#encDd').addEventListener('click',e=>{
+  const a=e.currentTarget,r=recCfg();if(!r)return;
+  const p=openPop(a,ENC.map(([v,label,sub,tag])=>({v,label,sub,tag,on:r.encoder===v})),
+    it=>{if(it.v!==recCfg().encoder)saveRecorder({encoder:it.v},[`Encoder: ${it.label}`,'chip']);},'right',null,{radio:true});
+  $$('button',p).forEach((b,i)=>b.dataset.enc=ENC[i][0]);popKeys(p,a);
+});
 $('#monDd').addEventListener('click',async e=>{
   const a=e.currentTarget;await loadDevices();const r=recCfg(),ms=REC.monitors||[];
   if(!ms.length){toast('No monitors found','alert');return;}
-  openPop(a,ms.map(m=>({m,label:`${m.index+1} · ${m.name}${m.primary?' (main)':''}`,sub:`${m.width} × ${m.height}${m.height>m.width?' · portrait':''}`,on:m.index===r.monitor})),
-    it=>{if(it.m.index!==recCfg().monitor)saveRecorder({monitor:it.m.index},[`Recording monitor ${it.m.index+1} · ${it.m.name}`,'video']);},'right');
+  popKeys(openPop(a,ms.map(m=>({m,label:`${m.index+1} · ${m.name}${m.primary?' (main)':''}`,sub:`${m.width} × ${m.height}${m.height>m.width?' · portrait':''}`,on:m.index===r.monitor})),
+    it=>{if(it.m.index!==recCfg().monitor)saveRecorder({monitor:it.m.index},[`Recording monitor ${it.m.index+1} · ${it.m.name}`,'video']);},'right',null,{radio:true}),a);
 });
 $('#chatDd').addEventListener('click',async e=>{
   const a=e.currentTarget;await loadDevices();const r=recCfg(),apps=(REC.devices&&REC.devices.chatApps)||[];
-  openPop(a,[...apps.map(x=>({v:x.name,label:x.name,sub:x.running?'Running now':'Not running right now',on:r.chatApp===x.name})),
+  popKeys(openPop(a,[...apps.map(x=>({v:x.name,label:x.name,sub:x.running?'Running now':'Not running right now',on:r.chatApp===x.name})),
     {v:'',label:'None',sub:'Voice chat stays silent; the game track gets all audio',on:!r.chatApp}],
-    it=>{if(it.v!==recCfg().chatApp)saveRecorder({chatApp:it.v},[it.v?`Voice chat records ${it.v}`:'No chat app · the game track gets all audio','headset']);},'right');
+    it=>{if(it.v!==recCfg().chatApp)saveRecorder({chatApp:it.v},[it.v?`Voice chat records ${it.v}`:'No chat app · the game track gets all audio','headset']);},'right',null,{radio:true}),a);
 });
 $('#micDd').addEventListener('click',async e=>{
   const a=e.currentTarget;await loadDevices();const r=recCfg(),ins=(REC.devices&&REC.devices.inputs)||[],def=ins.find(i=>i.isDefault);
-  openPop(a,[{v:'',label:'Windows default',sub:def?def.name:'Follows the Windows sound settings',on:!r.micDevice},
+  popKeys(openPop(a,[{v:'',label:'Windows default',sub:def?def.name:'Follows the Windows sound settings',on:!r.micDevice},
     ...ins.map(i=>({v:i.id,label:i.name,sub:i.isDefault?'The Windows default right now':'',on:r.micDevice===i.id}))],
-    it=>{if(it.v!==recCfg().micDevice)saveRecorder({micDevice:it.v},[`Microphone: ${it.v?it.label:'Windows default'}`,'mic']);},'right');
+    it=>{if(it.v!==recCfg().micDevice)saveRecorder({micDevice:it.v},[`Microphone: ${it.v?it.label:'Windows default'}`,'mic']);},'right',null,{radio:true}),a);
 });
 $('#openTaskbarSettings').addEventListener('click',()=>BT.openTaskbarSettings().then(()=>toast('Under “Other system tray icons”, turn on Backtrack','info'),e=>fail("Couldn't open the taskbar settings",e)));
 $('#openClipsDir').addEventListener('click',()=>{const r=recCfg();if(r)BT.openPath(r.clipsDir).catch(e=>fail("Couldn't open the folder",e));});
@@ -2048,10 +2214,13 @@ function renderHotkeys(force){
   const r=recCfg(),box=$('#hkRows');if(!r)return;
   if(hkEdit&&!force)return;   // never redraw under a capture in progress
   if(hkEdit){hkEdit=null;hkSuspend(false);}
+  // the row being changed (or cleared) keeps the keyboard focus on its keys through the redraw
+  const fa=document.activeElement,fr=box.contains(fa)&&fa.closest('[data-hkrow]'),fk=fr&&fr.dataset.hkrow;
   box.innerHTML=HK.map(([a,label])=>{const keys=r.hotkeys[a]||'',st=hkState(a),bad=st&&!st.ok;
-    return `<div class="srow" data-hkrow="${a}"><div class="sl"><b>${label}</b><span>${esc(HK_SUB[a]())}${bad?`<span class="hk-err">${esc(st.error||`${keys} isn't working`)}</span>`:''}</span></div>`+
+    return `<div class="srow" data-hkrow="${a}" data-find="hotkey shortcut keybind keybinding key combo"><div class="sl"><b>${label}</b><span>${esc(HK_SUB[a]())}${bad?`<span class="hk-err">${esc(st.error||`${keys} isn't working`)}</span>`:''}</span></div>`+
       (keys?`<button class="icon-btn hk-clear" data-hkclear="${a}" data-tip="Remove this hotkey" aria-label="Remove the ${label} hotkey">${ic('x','sm')}</button>`:'')+
       `<button class="keys${keys?'':' unset'}${bad?' bad':''}" data-hk="${a}" aria-label="${label}: ${keys||'not set'}. Click to change">${keys?keys.split('+').map(k=>`<kbd>${esc(k)}</kbd>`).join('<span class="plus">+</span>'):'Not set'}${ic('pencil','xs edit')}</button></div>`;}).join('');
+  if(fk)$(`[data-hk="${fk}"]`,box).focus({preventScroll:true});
   REC.hkSig=hkSig();
 }
 // Backtrack's own global hotkeys would swallow the combo being captured; pause them meanwhile.
@@ -2118,7 +2287,7 @@ $('#titlebar').addEventListener('mousedown',e=>{
 /* ================================================================== ROUTER + KEYS */
 function cur(){return (location.hash||'#library').slice(1).split('?')[0]||'library';}
 function go(r){if(cur()===r)route();else location.hash=r;}
-function updateCrumb(){const r=cur();$('#crumb').textContent=r.startsWith('settings')?'Settings':r==='library'||!ed.clip?'Library':`Editor · ${ed.clip.game}`;}
+function updateCrumb(){const r=cur();$('#crumb').textContent=r.startsWith('settings')?`Settings · ${pageName(setPage)}`:r==='library'||!ed.clip?'Library':`Editor · ${ed.clip.game}`;}
 const ROUTES=['library','editor','export','export-done','settings'];
 function route(){
   let r=cur(),deep=null;const dm=r.match(/^settings-([\w-]+)$/);if(dm){deep=dm[1];r='settings';}
@@ -2133,14 +2302,17 @@ function route(){
     else{location.replace('#library');return;}
   }
   const screen=r.startsWith('export')?'editor':r,from=lastMain;
-  if(screen!=='settings'){lastMain=screen;cancelHk();}
+  if(screen!=='settings'){lastMain=screen;cancelHk();if(findEl.value){findEl.value='';renderFind();}}
   if(screen!=='editor')pause();
+  const leftSet=screen!=='settings'&&$('.set').contains(document.activeElement);
   $$('.screen').forEach(s=>s.hidden=s.dataset.screen!==screen);
   $('#tbSettings').classList.toggle('on',screen==='settings');
+  // leaving Settings from the keyboard (Back): the focus goes to the Settings button, not to <body>
+  if(leftSet)$('#tbSettings').focus({preventScroll:true});
   closePop();
   if(screen==='library'){renderLibrary();   // back from the editor: keyboard focus returns to the clip you opened
     const fc=from==='editor'&&ed.clip&&$(`#libScroll .card[data-clip="${CSS.escape(ed.clip.id)}"]`);if(fc&&(document.activeElement===document.body||!document.activeElement))fc.focus({preventScroll:true});}
-  if(screen==='settings'){renderSettings();if(deep)scrollSettingsTo(deep,false);loadDevices();}
+  if(screen==='settings'){renderSettings();scrollSettingsTo(deep||'recording',false);loadDevices();}
   if(screen==='editor')nextFrame(()=>{renderTimeline();positionCrop();fitInspector();});
   if(r==='export'){
     pause();ml.hidden=false;
@@ -2171,6 +2343,7 @@ document.addEventListener('keydown',e=>{
     return;}   // Enter/Space act on the focused button
   const r=cur(),tag=(e.target.tagName||'').toLowerCase(),typing=(tag==='input'&&e.target.type!=='range'&&e.target.type!=='checkbox')||tag==='textarea';
   if(e.key==='Escape'&&popEl){closePop();return;}
+  if(r.startsWith('settings')&&(((e.ctrlKey||e.metaKey)&&e.key.toLowerCase()==='k')||(e.key==='/'&&!typing))){e.preventDefault();findEl.focus();findEl.select();return;}
   if(r==='library'){
     const card=!typing&&e.target.closest?e.target.closest('#libScroll .card'):null,id=card&&card.dataset.clip;
     if(e.key!=='Shift'&&!(e.shiftKey&&/^(Arrow\w+|Home|End)$/.test(e.key)))sel.base=null;   // any other key ends a Shift+arrow run
@@ -2242,7 +2415,7 @@ document.addEventListener('keydown',e=>{
 new ResizeObserver(()=>{if(cur()==='editor'||cur().startsWith('export')){renderTimeline();positionCrop();}}).observe(els.scroll);
 new ResizeObserver(()=>positionCrop()).observe($('#preview'));
 {const ro=new ResizeObserver(()=>fitSoon());ro.observe($('#inspector'));ro.observe($('.export-card'));}
-window.addEventListener('beforeunload',()=>{flushSave();});
+window.addEventListener('beforeunload',()=>{flushSave();flushRec();});
 // an update is about to install and restart Backtrack: save any edit still waiting for its 400 ms delay right now
 BT.on('app-updating',v=>{flushSave();toast(`Updating Backtrack to ${v}…`,'replay');});
 
@@ -2264,9 +2437,10 @@ async function loadAll(){
 }
 let refetchT=0,refetching=false,refetchAgain=false;
 async function refetch(){
-  if(refetching){refetchAgain=true;return;}refetching=true;
+  if(refetching){refetchAgain=true;return;}refetching=true;const scan=++scanStarted;
   try{
     const [s,list]=await Promise.all([BT.getSettings(),BT.listClips()]);
+    scanDone=Math.max(scanDone,scan);   // folders added before this rescan started stop "Looking for clips…"
     S.settings=s;
     // keep the open clip's unsaved edits; the rest of the editor state (In/Out, playhead, mix) stays as it is
     if(ed.clip&&savePending){const n=list.find(x=>x.id===savePending.clipId);if(n)n.edits=savePending.edits;}

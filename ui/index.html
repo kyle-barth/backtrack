@@ -718,42 +718,99 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .facts dd .off{color:var(--text-3);font-weight:500}
 
 /* =========================================================
-   Settings
+   Settings · six topics, one short page each
+   The nav lists the topics (with anything that needs attention); each page is a single calm column of
+   grouped rows. Find a setting (Ctrl+K) jumps straight to any row.
    ========================================================= */
 .set{display:grid;grid-template-columns:240px minmax(0,1fr)}
-.set-nav{display:flex;flex-direction:column;gap:2px;background:var(--bg-side);border-right:1px solid var(--line-1);padding:14px 10px 14px}
+.set-nav{display:flex;flex-direction:column;gap:2px;min-height:0;background:var(--bg-side);border-right:1px solid var(--line-1);padding:14px 10px 14px}
 .set-nav h1{font-size:var(--fs-xl);font-weight:650;padding:14px 10px 12px}
 .back-btn{align-self:flex-start;margin-left:2px}
-.sn{display:flex;align-items:center;gap:10px;height:36px;padding:0 10px;border-radius:var(--r-md);color:var(--text-2);font-weight:500}
+.set-find{display:flex;align-items:center;gap:8px;flex:none;height:34px;margin:0 0 12px;padding:0 6px 0 10px;border-radius:var(--r-md);background:var(--bg-2);border:1px solid var(--line-2);color:var(--text-3);transition:border-color .12s}
+.set-find:focus-within{border-color:var(--accent-line);box-shadow:0 0 0 3px var(--accent-soft)}
+.set-find input{flex:1;min-width:0;height:100%;background:none;border:0;outline:0;font-size:13px;color:var(--text-1);user-select:text}
+.set-find input::placeholder{color:var(--text-3)}
+.set-find kbd{height:18px;font-size:10.5px}
+.set-find:focus-within kbd,.set-find:has(input:not(:placeholder-shown)) kbd{display:none}
+.set-find .find-x{width:24px;height:24px;border-radius:5px}
+.sn-list{display:flex;flex-direction:column;gap:2px}
+.sn{display:flex;align-items:center;gap:10px;width:100%;height:38px;padding:0 10px;border-radius:var(--r-md);color:var(--text-2);font-weight:500;transition:background .12s,color .12s}
 .sn:hover{background:var(--bg-2);color:var(--text-1)}
-.sn.on{background:var(--bg-3);color:var(--text-1)}
-.sn.on svg{color:var(--accent)}
-.sn-h{padding:14px 10px 6px;font-size:var(--fs-cap);font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--text-3)}
-.sn-h:first-of-type{padding-top:4px}
-.set-foot{margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line-1);font-size:12px;color:var(--text-3);line-height:1.5}
+.sn.on{background:var(--bg-3);color:var(--text-1);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.sn.on>svg{color:var(--accent)}
+.sn:focus-visible{outline-offset:-2px}
+.sn-t{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sn-st{display:flex;align-items:center;gap:6px;flex:none;font-size:12px;font-weight:500;color:var(--text-3)}
+.sn-st:empty{display:none}
+.sn-st .rec-dot{width:7px;height:7px;box-shadow:0 0 0 2px rgba(255,61,85,.2)}
+.sn-st .rec-dot.off{box-shadow:none}
+.sn-st .rec-dot.starting{width:8px;height:8px;border-width:1.5px}
+.sn-st.warn{color:var(--warn)}
+/* find a setting: results replace the topic list while there's a query */
+.find-list{display:flex;flex-direction:column;gap:2px;min-height:0;overflow:auto;margin:0 -4px;padding:0 4px}
+.fhit{display:flex;flex-direction:column;justify-content:center;width:100%;min-height:44px;padding:5px 10px;border-radius:var(--r-md);cursor:pointer;color:var(--text-1);line-height:1.3}
+.fhit b{font-size:13px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fhit span{font-size:12px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fhit mark{background:none;color:var(--accent)}
+.fhit:hover{background:var(--bg-2)}
+.fhit[aria-selected=true]{background:var(--bg-3);box-shadow:inset 0 1px 0 rgba(255,255,255,.04)}
+.find-none{padding:8px 10px;font-size:12.5px;color:var(--text-3);line-height:1.45}
+.set-foot{display:flex;align-items:center;gap:8px;margin-top:auto;padding:12px 10px 0;border-top:1px solid var(--line-1);font-size:12px;color:var(--text-3);line-height:1.5}
+.set-foot svg{color:var(--text-3)}
 .set-foot b{color:var(--text-2);font-weight:600}
-.set-main{overflow:auto;min-height:0;padding:20px 28px 32px}
-.set-head{display:flex;align-items:center;gap:20px;margin-bottom:16px}
-.set-head.sub{margin:36px 0 16px;padding-top:24px;border-top:1px solid var(--line-1)}
-.scard-h p kbd{height:18px;min-width:18px;font-size:10.5px}
-.set-head h2{font-size:var(--fs-xl);font-weight:650;letter-spacing:-.01em}
-.set-head p{color:var(--text-3);font-size:13px;margin-top:2px}
-.status-card{margin-left:auto;display:flex;align-items:center;gap:12px;padding:10px 14px 10px 16px;border-radius:var(--r-lg);background:var(--bg-2);border:1px solid var(--line-1)}
+/* the page */
+.set-main{overflow:auto;min-height:0;padding:28px 40px 48px}
+.set-main:focus{outline:none}
+.set-page{max-width:800px}
+.pg-head{margin-bottom:20px}
+.pg-head h2{font-size:var(--fs-xl);font-weight:650;letter-spacing:-.01em}
+.pg-head h2:focus{outline:none}
+.pg-head p{color:var(--text-3);font-size:13px;margin-top:3px}
+.pg-head p kbd,.sg-note kbd{height:18px;min-width:18px;font-size:10.5px}
+.sgrp{margin-top:26px;scroll-margin-top:20px}
+.pg-head+.sgrp{margin-top:0}
+.sg-h{display:flex;align-items:baseline;gap:10px;margin:0 4px 9px;font-size:13.5px;font-weight:650;color:var(--text-1)}
+.sg-h small{min-width:0;font-size:12.5px;font-weight:400;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.sg-note{margin:10px 4px 0;font-size:12px;color:var(--text-3);line-height:1.5}
+.status-card{display:flex;align-items:center;gap:12px;min-width:0}
 .status-card b{display:block;font-size:13px;font-weight:600}
 .status-card span{font-size:12px;color:var(--text-3)}
-.set-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;align-items:start}
-.set-col{display:flex;flex-direction:column;gap:16px;min-width:0}
-.scard{border-radius:var(--r-lg);background:var(--bg-2);border:1px solid var(--line-1);transition:box-shadow .3s}
-.scard.flash{box-shadow:0 0 0 2px var(--accent-line)}
-.scard-h{display:flex;align-items:center;gap:12px;padding:12px 16px 10px}
-.sc-ico{display:grid;place-items:center;width:32px;height:32px;border-radius:9px;background:var(--bg-3);color:var(--accent);flex:none;box-shadow:inset 0 0 0 1px var(--line-1)}
-.scard-h h3{font-size:14px;font-weight:650}
-.scard-h p{font-size:12px;color:var(--text-3);margin-top:1px}
-.srow{display:flex;align-items:center;gap:16px;min-height:46px;padding:6px 16px;border-top:1px solid var(--line-1)}
+.scard{border-radius:var(--r-lg);background:var(--bg-2);border:1px solid var(--line-1)}
+.srow{display:flex;align-items:center;gap:16px;min-height:58px;padding:9px 18px;border-top:1px solid var(--line-1);scroll-margin:24px;transition:background .5s}
+.scard>.srow:first-child,.scard>:first-child>.srow:first-child{border-top:0}
+.set-page .hit{background-color:var(--accent-soft)!important;transition:none!important}
+.banner-row{transition:background-color .5s}
 .sl{flex:1;min-width:0}
 .sl b{display:block;font-size:13px;font-weight:600}
-.sl>span{display:block;font-size:12px;color:var(--text-3);margin-top:1px}
+.sl>span{display:block;font-size:12px;color:var(--text-3);margin-top:2px;text-wrap:pretty}
 .sl>.lvl{display:flex}
+/* live banners: the replay buffer at the top of Recording, FFmpeg at the top of Exports */
+.banner-row{display:flex;align-items:center;gap:16px;min-height:64px;margin-bottom:26px;padding:12px 18px 12px 20px;border-radius:var(--r-lg);background:var(--bg-2);border:1px solid var(--line-1);scroll-margin-top:20px}
+.banner-row .status-card{flex:1;gap:14px;max-width:none}
+.banner-row .status-card b{font-size:14px;font-weight:650}
+.banner-row .status-card span{margin-top:1px;font-size:12.5px}
+.banner-row .status-card .rec-dot{margin:0 2px}
+.rec-banner:has(.status-card>.rec-dot:not(.off):not(.warn):not(.starting)){background:linear-gradient(90deg,rgba(255,61,85,.08),rgba(255,61,85,0) 55%),var(--bg-2)}
+.rec-banner:has(.status-card.err),.ff-banner.bad{background:linear-gradient(90deg,rgba(246,195,80,.09),rgba(246,195,80,0) 60%),var(--bg-2);border-color:rgba(246,195,80,.3)}
+.rec-banner .status-card.err span{white-space:normal;color:var(--text-2);line-height:1.45}
+.ff-banner .status-card>svg{width:20px;height:20px}
+.ff-banner.bad .status-card span{white-space:normal;color:var(--text-2)}
+.ff-banner code{font:600 12px/1 var(--font);color:var(--text-1);user-select:text}
+.banner-row .btn{flex:none}
+/* encoder: one row; the sub-line says what it's recording with, the menu picks one. Amber when the error is the encoder's */
+.dd.bad{border-color:rgba(246,195,80,.55)}
+.pop button .pm .tag{height:16px;margin-left:7px;padding:0 5px;font-size:10px;vertical-align:1px}
+/* audio: the mic switch has a slot of its own, kept empty on the other two rows, so the three boxes share both edges */
+.sw-slot{width:38px;flex:none}
+/* Custom size belongs to Default size: it sits under it, indented, and stays quiet until Custom is the default */
+.srow.sub{min-height:0;padding-top:0;padding-bottom:12px;padding-left:34px;border-top:0}
+.srow.sub.dim .sl b,.srow.sub.dim .num{opacity:.55;transition:opacity .12s}
+.srow.sub.dim:hover .sl b,.srow.sub.dim:hover .num,.srow.sub.dim:focus-within .sl b,.srow.sub.dim:focus-within .num{opacity:1}
+/* quiet cross-links to where a setting really lives ("Change in Folders", "Mute hotkey Alt+F8") */
+.xlink{padding:0;border-radius:3px;font:inherit;font-weight:600;color:var(--text-2);text-decoration:underline;text-decoration-color:var(--line-3);text-underline-offset:2px;transition:color .12s}
+.xlink:hover{color:var(--text-1);text-decoration-color:var(--text-3)}
+.sg-note b{color:var(--text-2);font-weight:600}
+.about-row .logo{width:32px;height:32px;flex:none}
 .keys{display:flex;align-items:center;gap:4px;height:34px;padding:0 6px 0 8px;border-radius:var(--r-md);background:var(--bg-1);border:1px solid var(--line-2);transition:border-color .12s;flex:none}
 .keys:hover{border-color:var(--line-3)}
 .keys kbd{height:24px;min-width:26px;padding:0 7px;font-size:12px;color:var(--text-1);background:var(--bg-4)}
@@ -772,14 +829,6 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .lvl{display:flex;gap:2px}
 .lvl i{width:6px;height:4px;border-radius:1px;background:var(--bg-5)}
 .lvl i.on{background:var(--c)}
-.enc-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px;padding:4px 16px 16px}
-.enc{display:flex;align-items:center;gap:12px;padding:11px 12px;border-radius:var(--r-md);background:var(--bg-3);border:1px solid var(--line-1);text-align:left;min-width:0}
-.enc:hover{border-color:var(--line-3)}
-.enc.on{border-color:var(--accent);background:linear-gradient(var(--accent-soft),var(--accent-soft)),var(--bg-3);box-shadow:inset 0 0 0 1px var(--accent)}
-.enc.dis{opacity:.5;cursor:not-allowed}
-.enc .et{min-width:0;flex:1}
-.enc b{display:flex;align-items:center;gap:6px;font-size:13px;font-weight:600}
-.enc .et>span{display:block;font-size:11.5px;color:var(--text-3);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 .path{display:flex;align-items:center;gap:8px;height:36px;padding:0 12px;border-radius:var(--r-md);background:var(--bg-1);border:1px solid var(--line-2);font-size:13px;font-weight:600;flex:none}
 .path svg{color:var(--text-3)}
 
@@ -854,8 +903,8 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .dd.static{cursor:default;color:var(--text-2)}
 .dd.static:hover{border-color:var(--line-2)}
 .trk.warn{--c:var(--bad);cursor:pointer}
-.src-note{font-size:11.5px;color:var(--text-3);white-space:nowrap}.src-meta:has(.src-note:not(:empty)){flex-wrap:wrap;row-gap:2px}.src-meta .src-note:not(:empty){flex-basis:100%}
-.enc .et>span.inuse{color:var(--accent)}
+.src-note{font-size:11.5px;color:var(--text-3);white-space:nowrap}.src-meta:has(.src-note:not(:empty)){flex-wrap:wrap;row-gap:2px}
+.src-note .xlink{font-weight:500;color:var(--text-3)}.src-note .xlink:hover{color:var(--text-1)}
 .srow .sl .err-t{color:var(--warn)}
 /* thumbnails that aren't ready yet (thumb: null) or failed to load */
 .ph-thumb{display:grid;place-items:center;width:100%;height:100%;background:linear-gradient(135deg,var(--bg-3),var(--bg-2));color:var(--text-4)}
@@ -914,7 +963,7 @@ input[type=range].rng{-webkit-appearance:none;appearance:none;background:transpa
 .err-msg{display:block;margin-top:4px;font:500 12.5px/1.5 var(--font);color:var(--text-1);user-select:text;word-break:break-word}
 .err-hint{font-size:12.5px;color:var(--text-3);line-height:1.5}
 /* settings: working rows + the disabled capture preview */
-.srow .pathbox{display:flex;align-items:center;gap:8px;min-width:0;flex:0 1 auto;max-width:48%;height:36px;padding:0 12px;border-radius:var(--r-md);background:var(--bg-1);border:1px solid var(--line-2);font-size:13px;font-weight:600}
+.srow .pathbox{display:flex;align-items:center;gap:8px;min-width:0;flex:0 1 260px;width:260px;height:36px;padding:0 12px;border-radius:var(--r-md);background:var(--bg-1);border:1px solid var(--line-2);font-size:13px;font-weight:600}
 .pathbox svg{color:var(--text-3);flex:none}
 .pathbox span{white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
 .sl b.fp{overflow:hidden;text-overflow:ellipsis;user-select:text}
@@ -1123,9 +1172,11 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
   .st-legend{display:none}
   .st-top{margin-bottom:8px}
   .storage{padding:12px 14px}
-  .set-main{padding:16px 24px 24px}
-  .srow{min-height:46px;padding:6px 16px}
-  .scard-h{padding:10px 16px 8px}
+  .set-main{padding:22px 32px 36px}
+  .srow{min-height:52px;padding:7px 18px}
+  .sgrp{margin-top:22px}
+  .pg-head{margin-bottom:16px}
+  .banner-row{min-height:58px;margin-bottom:22px;padding:10px 18px}
   .m-body{padding:16px 20px;gap:16px}
   .preset{min-height:50px;padding:6px 12px}
   .spec-grid{margin-top:12px;padding-top:10px;gap:8px 16px}
@@ -1439,98 +1490,129 @@ body:has(.toast.show) .selbar [data-tip]:hover::after{display:none}
   </section>
 
   <!-- ============ SETTINGS ============ -->
+  <!-- Six topics, one short page each. The nav shows the topic you're on and anything that needs attention
+       (app.js renderSetNav); "Find a setting" (Ctrl+K) searches every row and jumps to it. -->
   <section class="screen set" data-screen="settings" hidden>
-    <aside class="set-nav">
+    <nav class="set-nav" aria-label="Settings">
       <button class="btn ghost sm back-btn" id="setBack"><svg class="i sm"><use href="#i-chev-l"/></svg>Back</button>
       <h1>Settings</h1>
-      <!-- nav mirrors the page: groups in page order, scroll-spy keeps the active one in sync -->
-      <div class="sn-h">Capture</div>
-      <a class="sn on" data-sec="s-buffer"><svg class="i"><use href="#i-replay"/></svg>Replay buffer</a>
-      <a class="sn" data-sec="s-video"><svg class="i"><use href="#i-video"/></svg>Video quality</a>
-      <a class="sn" data-sec="s-encoder"><svg class="i"><use href="#i-chip"/></svg>Encoder</a>
-      <a class="sn" data-sec="s-hotkeys"><svg class="i"><use href="#i-keyboard"/></svg>Hotkeys</a>
-      <a class="sn" data-sec="s-audio"><svg class="i"><use href="#i-wave"/></svg>Audio sources</a>
-      <a class="sn" data-sec="s-storage"><svg class="i"><use href="#i-drive"/></svg>Storage &amp; startup</a>
-      <div class="sn-h">Sharing</div>
-      <a class="sn" data-sec="s-export"><svg class="i"><use href="#i-upload"/></svg>Export defaults</a>
-      <a class="sn" data-sec="s-folders"><svg class="i"><use href="#i-clips"/></svg>Clip folders</a>
-      <div class="set-foot" id="setFoot"><b>Backtrack</b></div>
-    </aside>
-    <main class="set-main" id="setMain">
-      <header class="set-head" id="s-capture">
-        <div><h2>Capture</h2><p>Changes save automatically and apply to your next clip.</p></div>
-        <div class="status-card" id="recStatusCard"></div>
-      </header>
-      <div class="set-grid">
-        <div class="set-col">
-          <section class="scard" id="s-buffer">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-replay"/></svg></span><div><h3>Replay buffer</h3><p>Always recording in memory. Press the hotkey to keep what just happened.</p></div></header>
-            <div class="srow"><div class="sl"><b>Keep the replay buffer on</b><span>Starts with Backtrack and keeps running in the tray</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Keep the replay buffer on" data-sw="buffer"></button></div>
-            <div class="srow"><div class="sl"><b>Buffer length</b><span id="ramHint"></span></div>
-              <div class="seg" data-rec="bufferSecs"><button data-v="15">15 s</button><button data-v="30">30 s</button><button data-v="60">60 s</button><button data-v="120">2 min</button><button data-v="300">5 min</button></div></div>
-            <div class="srow"><div class="sl"><b>Confirm when a clip is saved</b><span>A small pop-up and sound in the corner of your game</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Confirm when a clip is saved" data-rsw="confirm"></button></div>
-          </section>
-          <section class="scard" id="s-video">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-video"/></svg></span><div><h3>Video quality</h3><p>What clips are recorded at. Exports can always be made smaller later.</p></div></header>
-            <div class="srow"><div class="sl"><b>Resolution</b><span id="resHint"></span></div><div class="seg" data-rec="resolution"><button data-v="720">720p</button><button data-v="1080">1080p</button><button data-v="1440">1440p</button><button data-v="0" data-tip="Your monitor's own size">Native</button></div></div>
-            <div class="srow"><div class="sl"><b>Frame rate</b><span>60 fps suits most games</span></div><div class="seg" data-rec="fps"><button data-v="30">30 fps</button><button data-v="60">60 fps</button><button data-v="120">120 fps</button></div></div>
-            <div class="srow"><div class="sl"><b>Bitrate</b><span id="rateHint"></span></div><div class="seg" data-rec="bitrateMbps"><button data-v="15">15 Mbps</button><button data-v="25">25 Mbps</button><button data-v="40">40 Mbps</button></div></div>
-            <div class="srow"><div class="sl"><b>Capture monitor</b><span>Backtrack records this whole screen</span></div><button class="dd" id="monDd" aria-haspopup="menu"><span id="monDdTxt">Main monitor</span><svg class="i xs"><use href="#i-chev-d"/></svg></button></div>
-          </section>
-          <section class="scard" id="s-encoder">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-chip"/></svg></span><div><h3>Encoder</h3><p>Hardware encoding keeps your game's frame rate smooth.</p></div></header>
-            <div class="enc-grid" role="radiogroup" aria-label="Encoder">
-              <button class="enc" data-enc="auto"><span class="radio"></span><span class="et"><b>Automatic <span class="tag">Best</span></b><span id="encAutoSub">Picks the best one for this PC</span></span></button>
-              <button class="enc" data-enc="amf"><span class="radio"></span><span class="et"><b>AMD AMF</b><span>Radeon graphics cards</span></span></button>
-              <button class="enc" data-enc="nvenc"><span class="radio"></span><span class="et"><b>NVIDIA NVENC</b><span>GeForce graphics cards</span></span></button>
-              <button class="enc" data-enc="x264"><span class="radio"></span><span class="et"><b>CPU (x264)</b><span>Works anywhere · uses more CPU</span></span></button>
-            </div>
-            <div class="srow"><div class="sl"><b>Recording with</b><span id="encInUse"></span></div></div>
-          </section>
+      <label class="set-find"><svg class="i sm"><use href="#i-search"/></svg><input id="setFind" placeholder="Find a setting" autocomplete="off" spellcheck="false" role="combobox" aria-expanded="false" aria-controls="setFindList" aria-autocomplete="list" aria-label="Find a setting"><kbd>Ctrl K</kbd><button class="icon-btn find-x" id="setFindX" aria-label="Clear the search" hidden><svg class="i xs"><use href="#i-x"/></svg></button></label>
+      <div class="sn-list" id="snList">
+        <button class="sn on" data-page="recording" aria-current="page" data-find="record recorder capture replay buffer"><svg class="i"><use href="#i-replay"/></svg><span class="sn-t">Recording</span><span class="sn-st" id="snRec"></span></button>
+        <button class="sn" data-page="hotkeys" tabindex="-1" data-find="hotkey hotkeys shortcut shortcuts keybind keybinds keybinding keyboard keys bind"><svg class="i"><use href="#i-keyboard"/></svg><span class="sn-t">Hotkeys</span><span class="sn-st warn" id="snHk"></span></button>
+        <button class="sn" data-page="audio" tabindex="-1" data-find="sound volume"><svg class="i"><use href="#i-wave"/></svg><span class="sn-t">Audio</span><span class="sn-st" id="snAu"></span></button>
+        <button class="sn" data-page="exports" tabindex="-1" data-find="export share sharing"><svg class="i"><use href="#i-upload"/></svg><span class="sn-t">Exports</span><span class="sn-st warn" id="snEx"></span></button>
+        <button class="sn" data-page="folders" tabindex="-1" data-find="folder"><svg class="i"><use href="#i-folder"/></svg><span class="sn-t">Folders</span><span class="sn-st warn" id="snFo"></span></button>
+        <button class="sn" data-page="app" tabindex="-1" data-find="startup start windows update updates"><svg class="i"><use href="#i-power"/></svg><span class="sn-t">Startup &amp; updates</span></button>
+      </div>
+      <div class="find-list" id="setFindList" role="listbox" aria-label="Matching settings" hidden></div>
+      <div class="set-foot"><svg class="i xs"><use href="#i-check-c"/></svg>Changes save as you make them</div>
+    </nav>
+    <main class="set-main" id="setMain" tabindex="-1">
+
+      <!-- Recording: the live buffer, how long it keeps, what it records at, and with which encoder -->
+      <div class="set-page" data-page="recording" role="region" aria-labelledby="h-recording">
+        <header class="pg-head"><h2 id="h-recording" tabindex="-1">Recording</h2><p>What the replay buffer keeps, and the quality it records at. Changes apply to your next clip.</p></header>
+        <div class="banner-row rec-banner" id="s-capture" data-find="replay buffer on off keep running status tray" data-alias="stop pause recording record" data-label="Keep the replay buffer on">
+          <div class="status-card" id="recStatusCard"></div>
+          <button class="btn sm" id="recFixEnc" hidden><svg class="i xs"><use href="#i-chip"/></svg>Change encoder</button>
+          <button class="btn sm" id="recRetry" hidden><svg class="i xs"><use href="#i-reset"/></svg>Try again</button>
+          <button class="switch" role="switch" aria-checked="false" aria-label="Keep the replay buffer on" data-sw="buffer" data-tip="Keep the replay buffer on · it starts with Backtrack and runs in the tray" data-tip-pos="l"></button>
         </div>
-        <div class="set-col">
-          <section class="scard" id="s-hotkeys">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-keyboard"/></svg></span><div><h3>Hotkeys</h3><p>Work in-game, even in exclusive full screen. Click one to change it.</p></div></header>
-            <div id="hkRows"></div>
-          </section>
-          <section class="scard" id="s-audio">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-wave"/></svg></span><div><h3>Audio sources</h3><p>Each source is saved as its own track, so you can mix it later.</p></div></header>
-            <div class="srow"><span class="src-ico" style="--c:var(--lane-game)"><svg class="i"><use href="#i-game"/></svg></span><div class="sl src"><b>Game audio</b><span class="src-meta" style="--c:var(--lane-game)"><span class="trk">Track 1</span><span class="lvl" data-lvl="Game"></span></span></div><span class="dd static" id="gameSrc"><span id="gameSrcTxt">All apps</span></span></div>
-            <div class="srow"><span class="src-ico" style="--c:var(--lane-voice)"><svg class="i"><use href="#i-headset"/></svg></span><div class="sl src"><b>Voice chat</b><span class="src-meta" style="--c:var(--lane-voice)"><span class="trk">Track 2</span><span class="lvl" data-lvl="Voice chat"></span><span class="src-note" id="chatNote"></span></span></div><button class="dd" id="chatDd" aria-haspopup="menu"><span id="chatDdTxt">Discord</span><svg class="i xs"><use href="#i-chev-d"/></svg></button></div>
-            <div class="srow"><span class="src-ico" style="--c:var(--lane-mic)"><svg class="i"><use href="#i-mic"/></svg></span><div class="sl src"><b>Microphone</b><span class="src-meta" style="--c:var(--lane-mic)"><span class="trk">Track 3</span><span class="lvl" data-lvl="Mic"></span><span class="src-note" id="micNote"></span></span></div><button class="dd" id="micDd" aria-haspopup="menu"><span id="micDdTxt">Windows default</span><svg class="i xs"><use href="#i-chev-d"/></svg></button><button class="switch" role="switch" aria-checked="false" aria-label="Record the microphone" data-rsw="micEnabled" data-tip="Record the mic" data-tip-pos="l"></button></div>
-          </section>
-          <section class="scard" id="s-storage">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-drive"/></svg></span><div><h3>Storage &amp; startup</h3><p>Where clips live and how Backtrack starts.</p></div></header>
-            <div class="srow"><div class="sl"><b>Save clips to</b><span id="clipsStats"></span></div><span class="pathbox" id="clipsDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="clipsDir"></span></span><button class="btn sm" id="openClipsDir">Open</button><button class="btn sm" id="changeClipsDir">Change…</button></div>
-            <div class="srow"><div class="sl"><b>Save exports to</b><span id="exStats"></span></div><span class="pathbox" id="exDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="exDir"></span></span><button class="btn sm" id="openExDir">Open</button><button class="btn sm" id="changeExDir">Change…</button></div>
-            <div class="srow"><div class="sl"><b>Start with Windows</b><span>Opens in the tray with the replay buffer running</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Start with Windows" data-rsw="startWithWindows"></button></div>
-            <div class="srow"><div class="sl"><b>Update automatically</b><span>When it starts, Backtrack installs a newer version from GitHub, if there is one</span></div><button class="switch" role="switch" aria-checked="true" aria-label="Update automatically" data-rsw="autoUpdate"></button></div>
-            <div class="srow"><div class="sl"><b>Show in the taskbar corner</b><span>Windows decides which icons sit next to the clock. Turn on Backtrack there to open or quit it with a right-click.</span></div><button class="btn sm" id="openTaskbarSettings">Open Windows settings</button></div>
-          </section>
-        </div>
+        <section class="sgrp" id="s-buffer" aria-labelledby="h-buffer">
+          <h3 class="sg-h" id="h-buffer">Replay buffer</h3>
+          <div class="scard">
+            <div class="srow" data-find="length seconds minutes how long keep" data-alias="clip duration ram memory"><div class="sl"><b>Buffer length</b><span id="ramHint"></span></div>
+              <div class="seg" data-rec="bufferSecs" aria-label="Buffer length"><button data-v="15">15 s</button><button data-v="30">30 s</button><button data-v="60">60 s</button><button data-v="120">2 min</button><button data-v="300">5 min</button></div></div>
+            <div class="srow" data-find="confirm popup pop-up sound notification overlay saved"><div class="sl"><b>Confirm when a clip is saved</b><span>A small pop-up and sound in the corner of your game</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Confirm when a clip is saved" data-rsw="confirm"></button></div>
+          </div>
+        </section>
+        <!-- what it records and how: quality, which screen, and the encoder (one row: what it's recording with, and a menu) -->
+        <section class="sgrp" id="s-video" aria-labelledby="h-video">
+          <h3 class="sg-h" id="h-video">Video<small>Exports can always be made smaller later</small></h3>
+          <div class="scard">
+            <div class="srow" data-find="resolution 720p 1080p 1440p native size pixels file smaller quality clips" data-alias="4k 2160p"><div class="sl"><b>Resolution</b><span id="resHint"></span></div><div class="seg" data-rec="resolution" aria-label="Resolution"><button data-v="720">720p</button><button data-v="1080">1080p</button><button data-v="1440">1440p</button><button data-v="0" data-tip="Your monitor's own size">Native</button></div></div>
+            <div class="srow" data-find="frame rate fps 30 60 120 smooth quality"><div class="sl"><b>Frame rate</b><span>60 fps suits most games</span></div><div class="seg" data-rec="fps" aria-label="Frame rate"><button data-v="30">30 fps</button><button data-v="60">60 fps</button><button data-v="120">120 fps</button></div></div>
+            <div class="srow" data-find="bitrate mbps quality per minute clips" data-alias="smaller file size"><div class="sl"><b>Bitrate</b><span id="rateHint"></span></div><div class="seg" data-rec="bitrateMbps" aria-label="Bitrate"><button data-v="15">15 Mbps</button><button data-v="25">25 Mbps</button><button data-v="40">40 Mbps</button></div></div>
+            <div class="srow" data-find="capture monitor screen display which"><div class="sl"><b>Capture monitor</b><span>Backtrack records this whole screen</span></div><button class="dd" id="monDd" aria-haspopup="menu" aria-label="Capture monitor"><span id="monDdTxt">Main monitor</span><svg class="i xs"><use href="#i-chev-d"/></svg></button></div>
+            <div class="srow" id="s-encoder" data-find="encoder hardware graphics card radeon geforce automatic recording with smooth" data-alias="gpu amd amf nvidia nvenc cpu x264 codec h264"><div class="sl"><b>Encoder</b><span id="encInUse"></span></div><button class="dd" id="encDd" aria-haspopup="menu" aria-label="Encoder" data-tip="Hardware encoding keeps your game's frame rate smooth" data-tip-pos="l"><span id="encDdTxt">Automatic</span><svg class="i xs"><use href="#i-chev-d"/></svg></button></div>
+          </div>
+        </section>
       </div>
 
-      <header class="set-head sub" id="s-sharing">
-        <div><h2>Sharing &amp; library</h2><p>How exports for Discord are made, and where Backtrack finds clips.</p></div>
-        <div class="status-card" id="ffStatus"></div>
-      </header>
-      <div class="set-grid">
-        <div class="set-col">
-          <section class="scard" id="s-export">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-upload"/></svg></span><div><h3>Export defaults</h3><p>What <kbd>E</kbd> and the library's Quick send button use.</p></div></header>
-            <div class="srow"><div class="sl"><b>Default size</b><span id="defHint"></span></div><div class="seg" data-set="defpreset"><button data-v="d10">10 MB</button><button data-v="d50">50 MB</button><button data-v="d500">500 MB</button><button data-v="custom">Custom</button><button data-v="orig">Original</button></div></div>
-            <div class="srow"><div class="sl"><b>Custom size</b><span>Used when you pick Custom, here or in the export options</span></div><label class="num"><input type="number" id="customMbSet" min="1" max="2000" step="1" aria-label="Custom size limit in MB">MB</label></div>
-            <div class="srow"><div class="sl"><b>Copy file to clipboard after export</b><span>Then paste it into any Discord chat with Ctrl+V</span></div><button class="switch" role="switch" aria-checked="false" data-sw="autocopy" aria-label="Copy file after export"></button></div>
-            <div class="srow"><div class="sl"><b>Quick send length</b><span>One click exports this much of a clip: around its markers, or else the ending</span></div><div class="seg" data-set="quicklen"><button data-v="15">15 s</button><button data-v="20">20 s</button><button data-v="30">30 s</button></div></div>
-          </section>
-        </div>
-        <div class="set-col">
-          <section class="scard" id="s-folders">
-            <header class="scard-h"><span class="sc-ico"><svg class="i"><use href="#i-clips"/></svg></span><div><h3>Clip folders</h3><p>Backtrack shows the clips saved directly in these folders (not their sub-folders, where GG keeps its own exports).</p></div></header>
+      <!-- Hotkeys: rows drawn by renderHotkeys() -->
+      <div class="set-page" data-page="hotkeys" role="region" aria-labelledby="h-hotkeys" hidden>
+        <header class="pg-head"><h2 id="h-hotkeys" tabindex="-1">Hotkeys</h2><p>They work in-game, even in exclusive full screen. Click one, then press the new keys.</p></header>
+        <section class="sgrp" id="s-hotkeys" aria-label="Hotkeys">
+          <div class="scard" id="hkRows"></div>
+          <p class="sg-note">While you're changing one, <kbd>Esc</kbd> cancels and <kbd>Backspace</kbd> removes the hotkey.</p>
+        </section>
+      </div>
+
+      <!-- Audio: three sources, three tracks, live level meters -->
+      <div class="set-page" data-page="audio" role="region" aria-labelledby="h-audio" hidden>
+        <header class="pg-head"><h2 id="h-audio" tabindex="-1">Audio</h2><p>Each source is saved as its own track, so you can mix them when you edit.</p></header>
+        <section class="sgrp" id="s-audio" aria-label="Audio sources">
+          <div class="scard">
+            <div class="srow" data-find="game audio sound apps track 1 desktop" data-label="Game audio"><span class="src-ico" style="--c:var(--lane-game)"><svg class="i"><use href="#i-game"/></svg></span><div class="sl src"><b>Game audio</b><span class="src-meta" style="--c:var(--lane-game)"><span class="trk">Track 1</span><span class="lvl" data-lvl="Game"></span></span></div><span class="dd static" id="gameSrc"><span id="gameSrcTxt">All apps</span></span><span class="sw-slot" aria-hidden="true"></span></div>
+            <div class="srow" data-find="voice chat discord friends track 2 app" data-label="Voice chat"><span class="src-ico" style="--c:var(--lane-voice)"><svg class="i"><use href="#i-headset"/></svg></span><div class="sl src"><b>Voice chat</b><span class="src-meta" style="--c:var(--lane-voice)"><span class="trk">Track 2</span><span class="lvl" data-lvl="Voice chat"></span><span class="src-note" id="chatNote"></span></span></div><button class="dd" id="chatDd" aria-haspopup="menu" aria-label="Voice chat app"><span id="chatDdTxt">Discord</span><svg class="i xs"><use href="#i-chev-d"/></svg></button><span class="sw-slot" aria-hidden="true"></span></div>
+            <div class="srow" data-find="microphone mic input device track 3 record voice mute on off" data-alias="headset" data-label="Microphone"><span class="src-ico" style="--c:var(--lane-mic)"><svg class="i"><use href="#i-mic"/></svg></span><div class="sl src"><b>Microphone</b><span class="src-meta" style="--c:var(--lane-mic)"><span class="trk">Track 3</span><span class="lvl" data-lvl="Mic"></span><span class="src-note" id="micNote"></span></span></div><button class="dd" id="micDd" aria-haspopup="menu" aria-label="Microphone"><span id="micDdTxt">Windows default</span><svg class="i xs"><use href="#i-chev-d"/></svg></button><button class="switch" role="switch" aria-checked="false" aria-label="Record the microphone" data-rsw="micEnabled" data-tip="Record the mic" data-tip-pos="l"></button></div>
+          </div>
+        </section>
+      </div>
+
+      <!-- Exports: FFmpeg, then what E and Quick send make -->
+      <div class="set-page" data-page="exports" role="region" aria-labelledby="h-exports" hidden>
+        <header class="pg-head"><h2 id="h-exports" tabindex="-1">Exports</h2><p>Defaults for exporting with <kbd>E</kbd> in the editor, and for Quick send in the library.</p></header>
+        <div class="banner-row ff-banner" id="s-ffmpeg" data-find="ffmpeg export install winget" data-label="FFmpeg"><div class="status-card" id="ffStatus"></div><button class="btn sm" id="ffCopy" hidden><svg class="i xs"><use href="#i-copy"/></svg>Copy command</button></div>
+        <section class="sgrp" id="s-export" aria-label="Export defaults">
+          <div class="scard">
+            <div class="srow" data-find="default size export discord limit mb nitro 10 50 500 original file smaller"><div class="sl"><b>Default size</b><span id="defHint"></span></div><div class="seg" data-set="defpreset" aria-label="Default size"><button data-v="d10">10 MB</button><button data-v="d50">50 MB</button><button data-v="d500">500 MB</button><button data-v="custom">Custom</button><button data-v="orig">Original</button></div></div>
+            <div class="srow sub" id="customRow" data-find="custom size mb megabytes limit file"><div class="sl"><b>Custom size</b><span id="customHint">Used when you pick Custom, here or in the export options</span></div><label class="num"><input type="number" id="customMbSet" min="1" max="2000" step="1" aria-label="Custom size limit in MB">MB</label></div>
+            <div class="srow" data-find="copy clipboard paste ctrl+v after export discord"><div class="sl"><b>Copy file to clipboard after export</b><span>Then paste it into any Discord chat with Ctrl+V</span></div><button class="switch" role="switch" aria-checked="false" data-sw="autocopy" aria-label="Copy file to clipboard after export"></button></div>
+            <div class="srow" data-find="quick send length seconds one click library duration"><div class="sl"><b>Quick send length</b><span>One click exports this much of a clip: around its markers, or else the ending</span></div><div class="seg" data-set="quicklen" aria-label="Quick send length"><button data-v="15">15 s</button><button data-v="20">20 s</button><button data-v="30">30 s</button></div></div>
+          </div>
+          <p class="sg-note">Exports are saved to <b id="exWhere"></b> · <button class="xlink" data-jump="r-exdir">Change in Folders</button></p>
+        </section>
+      </div>
+
+      <!-- Folders: where new files go, and which folders the library shows -->
+      <div class="set-page" data-page="folders" role="region" aria-labelledby="h-folders" hidden>
+        <header class="pg-head"><h2 id="h-folders" tabindex="-1">Folders</h2><p>Where Backtrack saves files, and which folders your library shows.</p></header>
+        <section class="sgrp" id="s-storage" aria-labelledby="h-saving">
+          <h3 class="sg-h" id="h-saving">Saving</h3>
+          <div class="scard">
+            <div class="srow" id="r-clipsdir" data-find="save clips to folder location where recordings path change open" data-alias="storage disk space"><div class="sl"><b>Save clips to</b><span id="clipsStats"></span></div><span class="pathbox" id="clipsDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="clipsDir"></span></span><button class="btn sm" id="openClipsDir">Open</button><button class="btn sm" id="changeClipsDir">Change…</button></div>
+            <div class="srow" id="r-exdir" data-find="save exports to folder location where path change open export folder storage disk space"><div class="sl"><b>Save exports to</b><span id="exStats"></span></div><span class="pathbox" id="exDirBox"><svg class="i xs"><use href="#i-folder"/></svg><span id="exDir"></span></span><button class="btn sm" id="openExDir">Open</button><button class="btn sm" id="changeExDir">Change…</button></div>
+          </div>
+        </section>
+        <section class="sgrp" id="s-folders" aria-labelledby="h-libfolders">
+          <h3 class="sg-h" id="h-libfolders">Clip folders in your library</h3>
+          <div class="scard">
             <div id="folderRows"></div>
-            <div class="srow"><div class="sl"><span>Add your SteelSeries Moments folder to see your older clips too. Removing a folder only hides its clips.</span></div><button class="btn sm" id="addFolder"><svg class="i xs"><use href="#i-folder"/></svg>Add folder…</button></div>
-          </section>
-        </div>
+            <div class="srow" data-find="add clip folder steelseries moments gg older clips library storage disk space" data-label="Add a clip folder"><div class="sl"><span>Add your SteelSeries Moments folder to see your older clips too. Removing a folder only hides its clips.</span></div><button class="btn sm" id="addFolder"><svg class="i xs"><use href="#i-folder"/></svg>Add folder…</button></div>
+          </div>
+          <p class="sg-note">Backtrack shows the clips saved directly in these folders, not in their sub-folders (where GG keeps its own exports).</p>
+        </section>
+      </div>
+
+      <!-- Startup & updates: how Backtrack starts, keeps itself current and shows in Windows -->
+      <div class="set-page" data-page="app" role="region" aria-labelledby="h-app" hidden>
+        <header class="pg-head"><h2 id="h-app" tabindex="-1">Startup &amp; updates</h2><p>How Backtrack starts, stays up to date and shows in Windows.</p></header>
+        <section class="sgrp" id="s-startup" aria-labelledby="h-startup">
+          <h3 class="sg-h" id="h-startup">Startup</h3>
+          <div class="scard">
+            <div class="srow" data-find="start with windows boot login launch tray autostart"><div class="sl"><b>Start with Windows</b><span>Opens in the tray with the replay buffer running</span></div><button class="switch" role="switch" aria-checked="false" aria-label="Start with Windows" data-rsw="startWithWindows"></button></div>
+            <div class="srow" data-find="taskbar corner tray icon system clock notification area"><div class="sl"><b>Show in the taskbar corner</b><span>Windows picks the icons by the clock. Turn on Backtrack there to open or quit it with a right-click.</span></div><button class="btn sm" id="openTaskbarSettings">Open Windows settings<svg class="i xs"><use href="#i-external"/></svg></button></div>
+          </div>
+        </section>
+        <section class="sgrp" id="s-updates" aria-labelledby="h-updates">
+          <h3 class="sg-h" id="h-updates">Updates</h3>
+          <div class="scard">
+            <div class="srow" data-find="update automatically auto updates github new version"><div class="sl"><b>Update automatically</b><span>When it starts, Backtrack installs a newer version from GitHub, if there is one</span></div><button class="switch" role="switch" aria-checked="true" aria-label="Update automatically" data-rsw="autoUpdate"></button></div>
+            <div class="srow about-row" data-find="about backtrack" data-alias="version" data-label="About Backtrack"><svg class="logo"><use href="#logo"/></svg><div class="sl" id="setFoot"><b>Backtrack</b></div></div>
+          </div>
+        </section>
       </div>
     </main>
   </section>

@@ -18,7 +18,7 @@ Plain HTML/CSS/JS: no bundler, no npm, no network requests. Tauri serves this fo
 ## Running it
 
 - **In the app:** `cargo tauri dev` from `src-tauri/`. The bridge sees `window.__TAURI__` and uses the real commands.
-- **In a browser (mock):** open `ui/index.html` directly (`file://` works) or serve the repo root. Routes: `#library`, `#editor`, `#export`, `#export-done`, `#settings`, plus Settings deep links `#settings-<section>` for `capture`, `buffer`, `video`, `encoder`, `hotkeys`, `audio`, `storage`, `export`, `sharing` and `folders`.
+- **In a browser (mock):** open `ui/index.html` directly (`file://` works) or serve the repo root. Routes: `#library`, `#editor`, `#export`, `#export-done`, `#settings`, plus Settings deep links `#settings-<page>` for its six pages (`recording`, `hotkeys`, `audio`, `exports`, `folders`, `app`) and `#settings-<section>` for `capture`, `buffer`, `video`, `encoder`, `ffmpeg`, `storage`, `export`, `sharing`, `startup` and `updates` (each opens the page that holds it).
 - **Screenshots:** headless Chrome works: `chrome --headless=new --window-size=1440,900 --screenshot=library.png "file:///…/ui/index.html#library"`.
 
 ## The bridge: `window.BT`
