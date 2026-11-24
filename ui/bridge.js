@@ -89,6 +89,8 @@ const BT = {
   listMonitors:     ()                      => call('list_monitors'),
   // Pause Backtrack's global hotkeys while Settings is capturing a new combo (so pressing it doesn't fire it).
   suspendHotkeys:   (suspended)             => call('suspend_hotkeys', { suspended }),
+  // Start a fresh Backtrack and quit this one (e.g. after a graphics driver crash broke recording).
+  restartApp:       ()                      => call('restart_app'),
   /** never throws, never rejects: logging must not break the UI */
   log(level, msg){
     try { return call('log', { level: String(level), msg: String(msg).slice(0, 8000) }).catch(() => {}); }

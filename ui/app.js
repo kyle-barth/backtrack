@@ -1884,9 +1884,13 @@ function applyStatus(st){
   if(!st)return;const prev=REC.status;REC.status=st;
   if(st.state==='on'){REC.wave.shift();REC.wave.push(Math.max(lvlOf(st,'Game'),lvlOf(st,'Mic')));}
   else if(prev&&prev.state==='on')REC.wave.fill(0);
-  if(prev&&prev.state!==st.state&&st.state==='error'){REC.errAt=Date.now();toast(`Recorder error · ${st.error||'something went wrong'}`,'alert');}
+  if(prev&&prev.state!==st.state&&st.state==='error'){REC.errAt=Date.now();toast(`Recorder error · ${st.error||'something went wrong'}`,'alert',{label:'Restart Backtrack',icon:'replay',fn:restartApp});}
   if(!document.hidden)renderRecorder();   // hidden (tray, minimized): drawn when it's shown again
 }
+/* Restart Backtrack: a fresh app, recorder and window (e.g. after a graphics driver crash). The page goes away with it. */
+function restartApp(){BT.restartApp().catch(e=>fail("Couldn't restart Backtrack",e));}
+/* starting after a failure: the recorder says why it's restarting in .error (e.g. "Graphics driver reset · restarting") */
+const restarting=st=>!!(st&&st.state==='starting'&&st.error);
 function renderRecorder(){
   renderPill();renderBufCard();renderRecLive();
   // an open recorder menu keeps its status line live (rewritten only when the text changes)
@@ -1900,6 +1904,7 @@ function renderPill(){
     const len=fmtBuf(r.bufferSecs),hk=r.hotkeys.save,hs=hkState('save'),ok=!hs||hs.ok;
     if(st.state==='on'){cls='buffer-pill'+(hk?'':' nokb');html=`<span class="rec-dot"></span><b>Replay buffer on</b><span>· last ${len}</span>${hk?`<span class="kb${ok?'':' bad'}">${kbdHTML(hk)}</span>`:''}`;
       tip=!hk?'No save hotkey · click to save or change it':ok?`${hk} saves the last ${len} · click for more`:`${hk} isn't working: ${hs.error}`;}
+    else if(restarting(st)){html='<span class="rec-dot starting"></span><b>Restarting replay buffer…</b>';tip=st.error;}
     else if(st.state==='starting'){html='<span class="rec-dot starting"></span><b>Starting replay buffer…</b>';tip='The recorder is starting';}
     else if(st.state==='error'){cls='buffer-pill err nokb';html='<span class="rec-dot warn"></span><b>Recorder error</b>';tip='Click for details';}
     else{html='<span class="rec-dot off"></span><b>Replay buffer off</b>';tip='Click to turn it on';}
@@ -1912,6 +1917,7 @@ function recHead(){
   if(st.state==='on'){const f=Math.min(r.bufferSecs,Math.floor(st.filledSecs));
     return `<span class="rec-dot"></span><div><b>Replay buffer on</b>${esc([st.game,`${f>=r.bufferSecs?'full':`${f} of ${fmtBuf(r.bufferSecs)} ready`}`,`${fmtMem(st.memoryMb)} RAM`].filter(Boolean).join(' · '))}<br>${esc(`${st.height}p${st.fps} · ${st.encoder}`)}${st.micMuted?'<br>Mic muted in recordings':''}</div>`;}
   if(st.state==='error')return `<span class="rec-dot warn"></span><div><b>Recorder error</b><span class="perr">${esc(st.error||'Something went wrong.')}</span></div>`;
+  if(restarting(st))return `<span class="rec-dot starting"></span><div><b>Restarting the replay buffer…</b>${esc(st.error)}</div>`;
   if(st.state==='starting')return '<span class="rec-dot starting"></span><div><b>Starting the replay buffer…</b>It keeps the last '+fmtBuf(r.bufferSecs)+' once it’s running</div>';
   return '<span class="rec-dot off"></span><div><b>Replay buffer off</b>The save hotkey does nothing until it’s on</div>';
 }
@@ -1924,6 +1930,7 @@ function openRecMenu(anchor){
     if(r.micEnabled)items.push({k:'mic',icon:st.micMuted?'mic':'vol-x',label:st.micMuted?'Unmute mic':'Mute mic',sub:'In recordings only, not in Discord',right:hk.muteMic});
   }
   if(st.state==='error')items.push({k:'retry',icon:'reset',label:'Try again'});
+  if(st.state==='error'||restarting(st))items.push({k:'restart',icon:'replay',label:'Restart Backtrack',sub:'Starts the app, recorder and window afresh'});
   items.push(st.state==='off'?{k:'on',icon:'power',label:'Turn on',right:hk.toggle}:{k:'off',icon:'power',label:'Turn off',sub:'The save hotkey stops working',right:hk.toggle});
   items.push({sep:true},{k:'settings',icon:'gear',label:'Recorder settings'});
   openPop(anchor,items,it=>{
@@ -1932,6 +1939,7 @@ function openRecMenu(anchor){
     else if(it.k==='mic')toggleMic();
     else if(it.k==='retry'||it.k==='on')setBufferEnabled(true);
     else if(it.k==='off')setBufferEnabled(false);
+    else if(it.k==='restart')restartApp();
     else if(it.k==='settings')go('settings-capture');
   },'left',null,{head:recHead(),cls:'recpop'});
 }
@@ -1944,7 +1952,7 @@ function renderBufCard(){
   const state=st?st.state:'unknown',on=state==='on',len=fmtBuf(r.bufferSecs);
   card.className='buf-card'+(on?'':state==='error'?' err':' off');
   $('#bcDot').className='rec-dot'+(on?'':state==='error'?' warn':state==='starting'?' starting':' off');
-  const sub=on?`Recording · ${st.height}p${st.fps}${st.micMuted?' · mic muted':''}`:state==='starting'?'Starting…':state==='error'?(st.error||'Recorder error'):state==='off'?'Off · not recording':'Checking…';
+  const sub=on?`Recording · ${st.height}p${st.fps}${st.micMuted?' · mic muted':''}`:state==='starting'?(st.error||'Starting…'):state==='error'?(st.error||'Recorder error'):state==='off'?'Off · not recording':'Checking…';
   const se=$('#bcSub');if(se.textContent!==sub)se.textContent=sub;se.title=on?`${st.width} × ${st.height} · ${st.fps} fps · ${st.encoder}`:sub;
   // Twice a second while recording: write only what changed.
   const w=$('#bcWave');if(!w.children.length)w.innerHTML='<i></i>'.repeat(REC.wave.length);
@@ -1978,6 +1986,7 @@ function renderRecLive(){
   let dot='off',title='Replay buffer',sub='Checking the recorder…';
   if(st){
     if(st.state==='on'){dot='';title='Replay buffer is running';sub=[st.game,encShort(st.encoder),`using ≈ ${fmtMem(st.memoryMb)} RAM`].filter(Boolean).join(' · ');}
+    else if(restarting(st)){dot='starting';title='Restarting the replay buffer…';sub=st.error;}
     else if(st.state==='starting'){dot='starting';title='Starting the replay buffer…';sub=`Keeps the last ${fmtBuf(r.bufferSecs)} once it’s running`;}
     else if(st.state==='error'){dot='warn';title='Recorder error';sub=st.error||'Something went wrong';}
     else{title='Replay buffer is off';sub=`Turn it on to keep the last ${fmtBuf(r.bufferSecs)}`;}

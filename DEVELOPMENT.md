@@ -80,10 +80,11 @@ cargo test                             # unit tests: export ladder, audio mix gr
 cargo test -- --ignored --nocapture    # end to end on the clips in your own library: scan, waveform, two 10 MB exports
 cargo test colour -- --ignored --nocapture   # recorded colours match the screen (covers a monitor for ~10 s)
 cargo test frame_rate -- --ignored --nocapture --test-threads=1   # recordings don't drop frames (covers a monitor for ~2 min)
+cargo test probe -- --ignored          # the graphics-driver-reset probe (gpu.rs) works on this GPU
 ```
 
 Some unit tests guard against costs that once came back unnoticed. They need no GPU, screen or running app:
-- `ui_test.rs` reads the pages' CSS. No animation repeats forever, except on the short-lived states listed with a reason in `FOREVER_OK` (loading spinners and the like), because while any CSS animation runs, WebView2 draws the page at the monitor's refresh rate. The recording dot has no CSS animation or transition: it pulses from a 10 Hz timer in `app.js`. The corner pop-up animates for at most 0.5 s at a time.
+- `ui_test.rs` reads the pages' CSS. No animation repeats forever, except on the short-lived states listed with a reason in `FOREVER_OK` (loading spinners and the like), because while any CSS animation runs, WebView2 draws the page at the monitor's refresh rate. The recording dot is static: any pulse, even a stepped one or a 10 Hz timer, kept the page drawing. The corner pop-up animates for at most 0.5 s at a time.
 - Helper ffmpeg and ffprobe processes start below normal priority, and only the recorder starts at normal priority (`ffmpeg.rs`; the test starts cmd.exe with each builder's flags). Thumbnails decode, scale and encode on one thread each (`media.rs`).
 - Windows Graphics Capture asks for frames at 4× the clip's rate, and `fps` drops the extra frames before `hwdownload` (`recorder.rs`).
 - The tray is updated only when its tooltip or check mark changes (`rec_app.rs`). index.json is rewritten only when the index changed, and a new thumbnail updates just its own clip (`library.rs`). Two-pass logs are deleted when an export ends, and stale ones at startup (`export.rs`).
@@ -93,6 +94,8 @@ The colour and frame-rate tests draw on a monitor, so close Backtrack first (a s
 The colour test fills a monitor with colour swatches through a game-like swap chain (RGBA, then BGRA), records it with the recorder's own pipeline, saves it the way a clip is saved, and checks each swatch's colour and warmth (red minus blue). Set `BACKTRACK_TEST_CAPTURE=vsrc_amf` to try AMD's old capture, which fails it.
 
 The frame-rate tests cover a monitor with a frame counter that changes on every frame the window presents: with vsync at fractions of the refresh rate, without vsync at 144, 100 and 75 fps, and (`frame_rate_under_gpu_load`) as fast as it can while keeping the GPU busy like a demanding game (`BACKTRACK_TEST_LOAD=<copies a frame>`, default 12). Each recording is decoded and its repeated frames (visible hitches) are compared with the ones it couldn't avoid: 60 fps slots in which the window presented nothing new. v0.4.0's pipeline is recorded alongside for comparison: it let Windows hand over frames only at the clip's rate, held back any that came a little early, and repeated up to a third of frames from games with vsync off.
+
+After a graphics driver crash the recorder gets itself going again: `gpu.rs` notices the reset (a small Direct3D device of Backtrack's own reports itself lost) and stops the recorder's ffmpeg, which may otherwise hang, still "recording". `recorder.rs` then restarts it with longer and longer waits (about four minutes in all) before it gives up and the app offers Restart Backtrack. To try it, with no game open, run `dxcap -forcetdr` in an administrator PowerShell (DXCap comes with Windows' optional Graphics Tools). The screen goes black for a moment, and the corner pop-up says "Graphics driver reset", then "Replay buffer back on". The page's restarting and failed states can be seen without a GPU: `index.html?mock=driverreset` and `?mock=driverfail`.
 
 To drive a running app from a script, start it with `$env:WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS = '--remote-debugging-port=9222'`. Then use `tools/cdp.ps1 -Eval "<js>"` or `-Shot out.png`.
 

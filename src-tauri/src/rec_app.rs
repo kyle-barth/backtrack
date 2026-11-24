@@ -82,7 +82,63 @@ fn emit_status(app: &AppHandle) {
         }
     }
     drop(last);
+    // Recording stopped, is restarting, or is back: someone in a game hears about it in the corner (in Backtrack
+    // itself, the page shows the state).
+    if let Some((kind, title, line)) = st.recorder.take_notice() {
+        if !main_in_front(app) {
+            toast(app, &title, &line, &kind);
+        }
+    }
     let _ = app.emit("recorder-status", status);
+}
+
+/// Backtrack's own window is the one in front (its page tells people what happened; no corner pop-up needed).
+fn main_in_front(app: &AppHandle) -> bool {
+    app.get_webview_window("main").is_some_and(|w| w.is_focused().unwrap_or(false) && w.is_visible().unwrap_or(false))
+}
+
+/// After a graphics driver reset (gpu.rs), get the replay buffer going again: its capture died with the driver.
+pub fn watch_gpu(app: &AppHandle) {
+    let app = app.clone();
+    crate::gpu::watch(move || {
+        util::log("warn", "graphics driver reset");
+        let st = app.state::<Arc<AppState>>();
+        if !st.settings.lock().unwrap().recorder.enabled {
+            return;
+        }
+        // A running recorder is stopped and restarts as after any failure (recorder.rs). One that had already given
+        // up, or is waiting to retry, gets a fresh start once the driver has had a moment.
+        if !st.recorder.on_gpu_reset() {
+            std::thread::sleep(Duration::from_secs(3));
+            start_recorder(&app);
+        }
+    });
+}
+
+/// Start a fresh Backtrack and quit this one: the recorder, the window and all their graphics start over. The new
+/// one waits for this one to be gone (main.rs, --restarted-from) before its single-instance check, which would
+/// otherwise just hand it back to this one.
+pub fn restart(app: &AppHandle) {
+    util::log("info", "restarting Backtrack");
+    app.state::<Arc<AppState>>().recorder.stop();
+    let visible = app.get_webview_window("main").is_some_and(|w| w.is_visible().unwrap_or(false));
+    let spawned = std::env::current_exe().and_then(|exe| {
+        let mut cmd = std::process::Command::new(exe);
+        cmd.arg("--restarted-from").arg(std::process::id().to_string());
+        if !visible {
+            cmd.arg("--background");
+        }
+        cmd.spawn()
+    });
+    match spawned {
+        Ok(_) => app.exit(0),
+        Err(e) => util::log("error", &format!("restart: couldn't start Backtrack again: {e}")),
+    }
+}
+
+#[tauri::command]
+pub fn restart_app(app: AppHandle) {
+    restart(&app);
 }
 
 /// The tray's check mark and tooltip for a status. Only the state, the buffer length and an error go in, never the
@@ -142,9 +198,10 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
     let save = MenuItem::with_id(app, "save", "Save clip", true, if save_keys.is_empty() { None } else { Some(save_keys.as_str()) })?;
     let toggle = CheckMenuItem::with_id(app, "toggle", "Replay buffer", true, enabled, None::<&str>)?;
     let open = MenuItem::with_id(app, "open", "Open Backtrack", true, None::<&str>)?;
+    let restart_item = MenuItem::with_id(app, "restart", "Restart Backtrack", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "Quit Backtrack", true, None::<&str>)?;
     let sep = PredefinedMenuItem::separator(app)?;
-    let menu = Menu::with_items(app, &[&save, &toggle, &sep, &open, &quit])?;
+    let menu = Menu::with_items(app, &[&save, &toggle, &sep, &open, &restart_item, &quit])?;
     *st.tray_toggle.lock().unwrap() = Some(toggle);
     TrayIconBuilder::with_id("main")
         .icon(app.default_window_icon().cloned().expect("icon"))
@@ -155,6 +212,7 @@ pub fn build_tray(app: &AppHandle) -> tauri::Result<()> {
             "save" => run_action(app, "save"),
             "toggle" => run_action(app, "toggle"),
             "open" => show_main(app),
+            "restart" => restart(app),
             "quit" => {
                 app.state::<Arc<AppState>>().recorder.stop();
                 app.exit(0);
@@ -290,6 +348,8 @@ pub fn start_recorder(app: &AppHandle) {
             return;
         };
         let mon = monitor_size(&app, cfg.monitor);
+        // Started by someone (or a driver reset): if it fails, it gets the full set of retries again.
+        st.recorder.reset_failures();
         if let Err(e) = st.recorder.start(&tools, &cfg, mon, on_change_fn(&app)) {
             util::log("error", &format!("recorder start: {e}"));
             st.recorder.fail(&e);
@@ -327,8 +387,7 @@ fn save_now(app: &AppHandle, secs: Option<f64>) -> Result<Saved, String> {
     if cfg.confirm {
         winutil::play_chime();
         // When Backtrack itself is in front, its in-app notice is enough.
-        let in_front = app.get_webview_window("main").map_or(false, |w| w.is_focused().unwrap_or(false) && w.is_visible().unwrap_or(false));
-        if !in_front {
+        if !main_in_front(app) {
             toast(app, "Clip saved", &format!("{} · {:.0} s", saved.game, saved.duration), "ok");
         }
     }
@@ -343,6 +402,10 @@ pub fn run_action(app: &AppHandle, action: &str) {
     let action = action.to_string();
     std::thread::spawn(move || match action.as_str() {
         "save" => {
+            if st.recorder.state() == "error" {
+                toast(&app, "Recording stopped", "Nothing to save · open Backtrack to restart it", "err");
+                return;
+            }
             if !st.recorder.is_running() {
                 toast(&app, "Replay buffer is off", "Turn it on in Backtrack to save clips", "warn");
                 return;

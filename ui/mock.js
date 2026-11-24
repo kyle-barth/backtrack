@@ -17,6 +17,8 @@
      mock=recordererror     the encoder is set to NVENC on this (AMD) PC, so the recorder is in "error"
      mock=fresh             the buffer starts empty (otherwise it has been running for 41 s)
      mock=hotkeyconflict    Alt+S is taken by another app (GG), so the save hotkey fails
+     mock=driverreset       4 s in, the graphics driver resets: the buffer restarts (6 s), then comes back on
+     mock=driverfail        as driverreset, but the restarts never work, so it ends in "error"
    Several flags can be combined with commas: mock=slow,exportfail
    Recycle Bin (multi-select delete):
      trashfail=N            the first N clips sent to trash_clips fail ("open in another program"), so a
@@ -324,6 +326,17 @@ function create(){
     for (const k in L) L[k] = Math.round(L[k]*100)/100;
   }
   setInterval(() => { if (rec.state !== 'on') return; stepLevels(); emitStatus(); }, 500);
+  // A graphics driver reset (recorder.rs): "starting" with the reason in .error while it retries, then on (or error).
+  if (flags.has('driverreset') || flags.has('driverfail')) setTimeout(() => {
+    if (rec.state !== 'on') return;
+    rec.state = 'starting'; rec.error = 'Graphics driver reset · restarting'; emitStatus();
+    rec.startT = setTimeout(() => {
+      if (rec.state !== 'starting') return;
+      if (flags.has('driverfail')){ rec.state = 'error'; rec.error = 'Recording stopped: Failed to create D3D11 device (887a0005)'; }
+      else { rec.state = 'on'; rec.error = null; rec.startedAt = Date.now(); }
+      emitStatus();
+    }, 6000);
+  }, 4000);
   if (settings.recorder.enabled){
     if (flags.has('fresh') || flags.has('recorderstarting')) setTimeout(() => startBuffer(true), 50);
     else { const info = encoderInfo(); if (info.err){ rec.state = 'error'; rec.error = info.err; } else { rec.state = 'on'; rec.startedAt = Date.now() - 41000; } }
@@ -395,6 +408,7 @@ function create(){
     },
     list_audio_devices: () => delay(80, {inputs:clone(INPUTS), chatApps:[{name:'Discord', running:discordRunning}]}),
     list_monitors: () => delay(60, clone(MONITORS)),
+    restart_app(){ setTimeout(() => location.reload(), 150); return delay(20); },
     list_clips(){
       const wait = firstList && flags.has('slow') ? 6000 : firstList ? 180 : 40;
       firstList = false;

@@ -16,7 +16,7 @@ use std::collections::VecDeque;
 use std::io::{Read, Write};
 use std::path::Path;
 use std::process::{Child, Stdio};
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
@@ -161,7 +161,25 @@ pub struct Recorder {
     started_at: Mutex<Option<Instant>>,
     /// The GPU scaler failed on a game's frames: record at the monitor's own size until Backtrack restarts.
     no_gpu_scale: AtomicBool,
+    /// Restarts in a row that didn't get the recorder running for a while (see [`retry_delay`]).
+    failures: AtomicU32,
+    /// Recording stopped by itself since it last ran: say so when it's running again.
+    troubled: AtomicBool,
+    /// The graphics driver was reset (gpu.rs), so the recorder's ffmpeg was stopped on purpose.
+    gpu_reset: AtomicBool,
+    /// Something to tell someone who may be in a game (kind, title, line), taken by rec_app for the corner pop-up.
+    notice: Mutex<Option<(String, String, String)>>,
 }
+
+/// How long to wait before restarting after `failures` restarts in a row that didn't last, or None to give up.
+/// About four minutes in all: long enough for a graphics driver to come back after a crash.
+pub(crate) fn retry_delay(failures: u32) -> Option<std::time::Duration> {
+    const SECS: [u64; 8] = [2, 5, 10, 20, 30, 60, 60, 60];
+    SECS.get(failures as usize).map(|s| std::time::Duration::from_secs(*s))
+}
+
+/// A recorder that ran at least this long before stopping was working: its restarts start counting afresh.
+const RAN_FINE_SECS: u64 = 60;
 
 static ENCODER: OnceLock<String> = OnceLock::new();
 
@@ -304,7 +322,38 @@ impl Recorder {
             saving: AtomicBool::new(false),
             started_at: Mutex::new(None),
             no_gpu_scale: AtomicBool::new(false),
+            failures: AtomicU32::new(0),
+            troubled: AtomicBool::new(false),
+            gpu_reset: AtomicBool::new(false),
+            notice: Mutex::new(None),
         })
+    }
+
+    fn set_notice(&self, kind: &str, title: &str, line: &str) {
+        *self.notice.lock().unwrap() = Some((kind.into(), title.into(), line.into()));
+    }
+
+    /// The latest thing worth a corner pop-up, once.
+    pub fn take_notice(&self) -> Option<(String, String, String)> {
+        self.notice.lock().unwrap().take()
+    }
+
+    /// Someone asked for the recorder (turned it on, or Try again): it gets the full set of retries again.
+    pub fn reset_failures(&self) {
+        self.failures.store(0, Ordering::SeqCst);
+    }
+
+    /// The graphics driver was reset: the capture is dead even if ffmpeg hasn't noticed. Stop ffmpeg, so the usual
+    /// restart (see `start`) takes over. Returns false when there's no recorder running to restart.
+    pub fn on_gpu_reset(&self) -> bool {
+        let mut sess = self.session.lock().unwrap();
+        let Some(child) = sess.as_mut().and_then(|s| s.child.as_mut()) else { return false };
+        if !matches!(child.try_wait(), Ok(None)) {
+            return false; // already gone: it's waiting to retry
+        }
+        self.gpu_reset.store(true, Ordering::SeqCst);
+        let _ = child.kill();
+        true
     }
 
     pub fn state(&self) -> String {
@@ -325,7 +374,7 @@ impl Recorder {
 
     /// Start (or restart) the buffer. `mon` is the capture monitor's native size.
     pub fn start(self: &Arc<Self>, tools: &Tools, cfg: &RecorderSettings, mon: (u32, u32), on_change: Arc<dyn Fn() + Send + Sync>) -> Result<(), String> {
-        self.stop();
+        self.halt();
         self.set_state("starting", None);
         *self.cfg.lock().unwrap() = cfg.clone();
         on_change();
@@ -439,29 +488,56 @@ impl Recorder {
                 if stopping.load(Ordering::SeqCst) {
                     return;
                 }
+                let gpu_reset = me.gpu_reset.swap(false, Ordering::SeqCst);
                 let tail = err_tail.lock().unwrap().clone();
                 let last = tail.lines().filter(|l| !l.trim().is_empty()).last().unwrap_or("ffmpeg stopped").to_string();
-                util::log("error", &format!("recorder stopped unexpectedly: {tail}"));
-                let ran_long = me.started_at.lock().unwrap().map_or(false, |t| t.elapsed().as_secs() > 20);
-                let same_session = me.session.lock().unwrap().as_ref().map(|s| s.id) == Some(id);
+                let why = if gpu_reset { " (graphics driver reset)" } else { "" };
+                util::log("error", &format!("recorder stopped unexpectedly{why}: {tail}"));
+                let current = |me: &Recorder| me.session.lock().unwrap().as_ref().map(|s| s.id) == Some(id);
+                if !current(&me) {
+                    return; // turned off or started again meanwhile
+                }
                 // Some full-screen games switch the frames they hand the display to a format the GPU scaler refuses
                 // mid-recording (AMD vpp_amf: "SubmitInput() failed with error 4", seen with Rocket League). The
-                // encoder itself takes them, so carry on at the monitor's own size.
+                // encoder itself takes them, so carry on at the monitor's own size, straight away.
                 let scaler_failed = scaled && (tail.contains("vpp_amf") || tail.contains("scale_d3d11"));
-                if scaler_failed {
+                let delay = if scaler_failed {
                     me.no_gpu_scale.store(true, Ordering::SeqCst);
                     util::log("warn", "recorder: the GPU scaler refused the game's frames, recording at the monitor's own size until Backtrack restarts");
-                }
-                if (ran_long || scaler_failed) && same_session {
-                    // A transient failure (e.g. display mode change when a game goes full screen): restart.
-                    util::log("info", "restarting recorder");
-                    std::thread::sleep(std::time::Duration::from_secs(if scaler_failed { 0 } else { 2 }));
-                    if let Err(e) = me.start(&tools2, &cfg2, mon, on_change.clone()) {
-                        me.set_state("error", Some(e));
-                        on_change();
+                    Some(std::time::Duration::ZERO)
+                } else {
+                    // One that had been running a while was working (a display mode change, say, stops it): restarts
+                    // count afresh. Restarts that don't last count up, with longer and longer waits (a crashed
+                    // graphics driver takes a while to come back), and then give up.
+                    if me.started_at.lock().unwrap().is_some_and(|t| t.elapsed().as_secs() >= RAN_FINE_SECS) {
+                        me.failures.store(0, Ordering::SeqCst);
                     }
-                } else if same_session {
+                    let failures = me.failures.fetch_add(1, Ordering::SeqCst);
+                    // Say so when it's worth knowing about (someone may be mid-game): the driver crashed, or a
+                    // restart didn't hold. One quick restart after a hiccup stays quiet, as it always has.
+                    if (gpu_reset || failures >= 1) && !me.troubled.swap(true, Ordering::SeqCst) {
+                        me.set_notice("warn", if gpu_reset { "Graphics driver reset" } else { "Recording stopped" }, "Restarting the replay buffer…");
+                    }
+                    retry_delay(failures)
+                };
+                let Some(delay) = delay else {
+                    util::log("error", "recorder: still failing after every restart, giving up");
                     me.set_state("error", Some(format!("Recording stopped: {last}")));
+                    me.set_notice("err", "Replay buffer stopped", "Backtrack couldn't restart it · open Backtrack to try again");
+                    me.troubled.store(true, Ordering::SeqCst);
+                    on_change();
+                    return;
+                };
+                util::log("info", &format!("restarting recorder in {} s", delay.as_secs()));
+                let reason = if gpu_reset { "Graphics driver reset" } else { "Recording stopped" };
+                me.set_state("starting", Some(format!("{reason} · restarting")));
+                on_change();
+                std::thread::sleep(delay);
+                if !current(&me) {
+                    return;
+                }
+                if let Err(e) = me.start(&tools2, &cfg2, mon, on_change.clone()) {
+                    me.set_state("error", Some(e));
                     on_change();
                 }
             })
@@ -496,12 +572,25 @@ impl Recorder {
                 announced = true;
                 self.set_state("on", None);
                 util::log("info", "replay buffer running");
+                if self.troubled.swap(false, Ordering::SeqCst) {
+                    self.set_notice("ok", "Replay buffer back on", "Recording again");
+                }
                 on_change();
             }
         }
     }
 
+    /// Stop recording because someone asked (turned off, quitting, restarting Backtrack): nothing more to report.
     pub fn stop(&self) {
+        self.troubled.store(false, Ordering::SeqCst);
+        self.failures.store(0, Ordering::SeqCst);
+        self.gpu_reset.store(false, Ordering::SeqCst);
+        *self.notice.lock().unwrap() = None;
+        self.halt();
+    }
+
+    /// Stop ffmpeg and the audio, and empty the buffer (also before every start).
+    fn halt(&self) {
         let sess = self.session.lock().unwrap().take();
         if let Some(mut s) = sess {
             s.stopping.store(true, Ordering::SeqCst);
@@ -563,8 +652,10 @@ impl Recorder {
 
     /// Save the last `secs` seconds (keyframe-aligned) as an .mp4 in `out_dir`, named after `game`.
     pub fn save(&self, tools: &Tools, secs: f64, game: &str, out_dir: &Path) -> Result<Saved, String> {
-        if self.state() != "on" {
-            return Err("The replay buffer isn't running.".into());
+        match self.state().as_str() {
+            "on" => {}
+            "starting" => return Err("The replay buffer is still starting.".into()),
+            _ => return Err("The replay buffer isn't running.".into()),
         }
         if self.saving.swap(true, Ordering::SeqCst) {
             return Err("Already saving a clip.".into());
@@ -704,5 +795,42 @@ mod tests {
                 None => assert!(!scaled),
             }
         }
+    }
+
+    #[test]
+    fn restarts_wait_longer_each_time_then_give_up_after_a_few_minutes() {
+        let waits: Vec<u64> = (0..50).map_while(retry_delay).map(|d| d.as_secs()).collect();
+        // A hiccup (a game changing the display mode) is back within seconds, as before.
+        assert_eq!(waits[0], 2);
+        assert!(waits.windows(2).all(|w| w[1] >= w[0]), "waits never get shorter: {waits:?}");
+        // A crashed graphics driver can take a minute or two to come back: keep trying that long, but not forever.
+        let total: u64 = waits.iter().sum();
+        assert!((180..=600).contains(&total), "{total} s of retries: {waits:?}");
+        assert!(retry_delay(waits.len() as u32).is_none());
+    }
+
+    #[test]
+    fn a_gpu_reset_with_nothing_recording_asks_for_a_fresh_start() {
+        let r = Recorder::new();
+        // No ffmpeg to stop: rec_app starts the recorder itself.
+        assert!(!r.on_gpu_reset());
+        assert!(!r.gpu_reset.load(Ordering::SeqCst));
+        assert!(r.take_notice().is_none());
+    }
+
+    #[test]
+    fn a_notice_pops_up_once_and_turning_off_drops_it() {
+        let r = Recorder::new();
+        r.set_notice("warn", "Graphics driver reset", "Restarting the replay buffer…");
+        assert_eq!(r.take_notice().map(|n| n.1), Some("Graphics driver reset".to_string()));
+        assert!(r.take_notice().is_none());
+        // Turned off meanwhile: nothing left to say, and no "back on" later.
+        r.set_notice("warn", "Recording stopped", "Restarting the replay buffer…");
+        r.troubled.store(true, Ordering::SeqCst);
+        r.failures.store(3, Ordering::SeqCst);
+        r.stop();
+        assert!(r.take_notice().is_none());
+        assert!(!r.troubled.load(Ordering::SeqCst));
+        assert_eq!(r.failures.load(Ordering::SeqCst), 0);
     }
 }

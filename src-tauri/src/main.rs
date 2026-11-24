@@ -4,6 +4,7 @@
 mod audio;
 mod export;
 mod ffmpeg;
+mod gpu;
 mod library;
 mod media;
 mod rec_app;
@@ -556,6 +557,12 @@ fn log(level: String, msg: String) {
 }
 
 fn main() {
+    // Restarted (rec_app::restart): wait for the old Backtrack to be gone first, or the single-instance check below
+    // would hand this one straight back to it as it quits.
+    let args: Vec<String> = std::env::args().collect();
+    if let Some(pid) = args.iter().position(|a| a == "--restarted-from").and_then(|i| args.get(i + 1)).and_then(|p| p.parse().ok()) {
+        winutil::wait_for_exit(pid, std::time::Duration::from_secs(20));
+    }
     util::log("info", "Backtrack starting");
     let settings = Settings::load();
     let state = Arc::new(AppState {
@@ -653,6 +660,7 @@ fn main() {
             }
             rec_app::register_hotkeys(&handle);
             rec_app::status_pump(handle.clone());
+            rec_app::watch_gpu(&handle);
             if state.settings.lock().unwrap().recorder.enabled {
                 rec_app::start_recorder(&handle);
             }
@@ -704,7 +712,8 @@ fn main() {
             rec_app::add_marker,
             rec_app::list_audio_devices,
             rec_app::list_monitors,
-            rec_app::suspend_hotkeys
+            rec_app::suspend_hotkeys,
+            rec_app::restart_app
         ])
         .build(tauri::generate_context!())
         .expect("error while building Backtrack")
