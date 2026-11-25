@@ -16,6 +16,9 @@
                      and its notes wait to be shown with the next release that has one. }
    ===================================================================== */
 window.BT_NOTES = [
+  { version: '0.4.8', date: '2026-11-25', title: 'Thumbnails follow your trim', items: [
+    { kind: 'improved', text: 'A trimmed clip’s thumbnail shows where it starts', more: 'Move the In point and the thumbnail becomes the first frame of your trim, the one your export starts on. Clips you’ve already trimmed get theirs too.', highlight: true },
+  ] },
   { version: '0.4.7', date: '2026-11-24', title: 'Updates tell you what’s new', items: [
     { kind: 'new', text: 'See what’s new after an update', more: 'The version in the title bar says when Backtrack has updated. Click it for what changed.', highlight: true },
     { kind: 'improved', text: 'Updates wait until you’re out of your game', more: 'Backtrack won’t restart to install one while a game is in front, so the replay buffer never empties mid-match.', highlight: true },

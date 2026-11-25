@@ -185,6 +185,7 @@ function create(){
   const checkMs = qp('checkms') ? +qp('checkms')[1] : 40;     // ?checkms=1500: a slow trash_check (a sleeping HDD, a network share)
   const listeners = {};
   const emit = (ev, payload) => (listeners[ev] || []).slice().forEach(fn => { try { fn(payload); } catch (e) { setTimeout(() => { throw e; }); } });
+  const trimThumbT = new Map();   // clip id → the pending "first trimmed frame" thumbnail (save_edits)
   const logs = [];
 
   const settings = {
@@ -451,7 +452,15 @@ function create(){
     save_edits({clipId, edits}){
       const c = need(clipId);
       if (!(edits && edits.outT > edits.inT)) throw 'Invalid edits: Out must be after In.';
+      const was = c.edits ? c.edits.inT : 0;
       c.edits = {inT:+edits.inT, outT:+edits.outT, markers:(edits.markers || []).map(Number).sort((a, b) => a - b)};
+      // A new In point: like the app, the thumbnail becomes the first trimmed frame, made in the background. With no
+      // video here it's the same picture under the new name the app would give it.
+      if (c.edits.inT !== was && c.thumb){
+        const at = c.edits.inT, base = c.thumb.replace(/#.*$/, '');
+        clearTimeout(trimThumbT.get(c.id));
+        trimThumbT.set(c.id, setTimeout(() => { c.thumb = at > 0.01 ? `${base}#in-${Math.round(at*1000)}` : base; emit('library-changed', null); }, 700));
+      }
     },
     get_keyframes({clipId}){
       // GG-style clips: a keyframe every 2.083 s (125 frames at 60 fps)

@@ -6,7 +6,7 @@ use crate::ffmpeg::Tools;
 use crate::util;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
@@ -119,7 +119,49 @@ pub struct Library {
     unreadable: Mutex<HashMap<String, (u64, u64)>>,
     /// Decoded waveform peaks at 100 points per second, per (clip id, audio track).
     pub wave_base: Mutex<HashMap<(String, usize), Arc<Vec<f32>>>>,
+    /// A thumbnail run is going, and whether another was asked for since it last looked for work.
     pub thumbs_busy: AtomicBool,
+    pub thumbs_again: AtomicBool,
+}
+
+/// A thumbnail to make: the frame `at` seconds into the clip at `path`, saved as `name` in the thumbnail cache.
+#[derive(Debug, PartialEq)]
+pub struct ThumbJob {
+    pub id: String,
+    pub path: String,
+    pub at: f64,
+    pub name: String,
+}
+
+/// A clip trimmed at the start shows the first frame of its trim, the one its exports start on: (time, cache file
+/// name). The time is in the name, so a new trim gets a new file (and the window doesn't show a cached old one).
+fn trim_thumb(id: &str, edits: Option<&Edits>) -> Option<(f64, String)> {
+    let at = edits?.in_t;
+    (at.is_finite() && at > 0.01).then(|| (at, format!("{id}-in-{}.jpg", (at * 1000.0).round() as u64)))
+}
+
+/// Where an untrimmed clip's own thumbnail is taken from: a little way in, past a fade or a black first frame.
+fn default_thumb_at(duration: f64) -> f64 {
+    (duration * 0.3).clamp(0.0, 3.0)
+}
+
+/// Is `name` one of the trimmed-clip thumbnails trim_thumb names ("<hex id>-in-<ms>.jpg")?
+fn is_trim_thumb(name: &str) -> bool {
+    let Some(base) = name.strip_suffix(".jpg") else { return false };
+    let Some((id, ms)) = base.split_once("-in-") else { return false };
+    !id.is_empty() && id.chars().all(|c| c.is_ascii_hexdigit()) && !ms.is_empty() && ms.chars().all(|c| c.is_ascii_digit())
+}
+
+/// Delete trimmed-clip thumbnails in `dir` that are no longer in `keep` (a trim that changed, a clip that's gone).
+/// Nothing else in the folder is touched.
+pub fn prune_trim_thumbs(dir: &Path, keep: &HashSet<String>) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let name = e.file_name().to_string_lossy().into_owned();
+        if is_trim_thumb(&name) && !keep.contains(&name) {
+            let _ = std::fs::remove_file(e.path());
+        }
+    }
 }
 
 fn read_json<T: for<'de> Deserialize<'de> + Default>(path: &Path) -> T {
@@ -136,6 +178,7 @@ impl Library {
             unreadable: Mutex::new(HashMap::new()),
             wave_base: Mutex::new(HashMap::new()),
             thumbs_busy: AtomicBool::new(false),
+            thumbs_again: AtomicBool::new(false),
         }
     }
 
@@ -254,20 +297,21 @@ impl Library {
                 .map(|g| if g.starts_with("moments.") { "Desktop capture".to_string() } else { g })
                 .unwrap_or_else(|| game_from_stem(&stem));
             let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
-            let thumb = p
-                .gg_thumb
-                .as_ref()
-                .map(PathBuf::from)
-                .filter(|t| t.is_file())
-                .or_else(|| thumb_maps.get(&dir).and_then(|m| m.get(&stem.to_lowercase()).cloned()))
-                .or_else(|| Some(thumb_cache.join(format!("{id}.jpg"))).filter(|t| t.is_file()))
-                .map(|t| t.to_string_lossy().into_owned());
             let user = store.clips.get(&f.key).cloned().unwrap_or_default();
             let edits = user.edits.clone().or_else(|| {
                 p.gg_trim.map(|(a, b)| Edits { in_t: a, out_t: b, markers: vec![] }).or_else(|| {
                     (!p.bt_markers.is_empty()).then(|| Edits { in_t: 0.0, out_t: p.duration, markers: p.bt_markers.clone() })
                 })
             });
+            // A clip trimmed at the start shows its first trimmed frame once that's been made (thumbs_wanted); until
+            // then, and for every other clip, GG's thumbnail or the one Backtrack made.
+            let thumb = trim_thumb(&id, edits.as_ref())
+                .map(|(_, name)| thumb_cache.join(name))
+                .filter(|t| t.is_file())
+                .or_else(|| p.gg_thumb.as_ref().map(PathBuf::from).filter(|t| t.is_file()))
+                .or_else(|| thumb_maps.get(&dir).and_then(|m| m.get(&stem.to_lowercase()).cloned()))
+                .or_else(|| Some(thumb_cache.join(format!("{id}.jpg"))).filter(|t| t.is_file()))
+                .map(|t| t.to_string_lossy().into_owned());
             clips.push(Clip {
                 id,
                 path: f.path.to_string_lossy().into_owned(),
@@ -319,15 +363,45 @@ impl Library {
         }
     }
 
-    /// Clips that have no thumbnail yet: (id, path, duration).
-    pub fn missing_thumbs(&self) -> Vec<(String, String, f64)> {
-        self.clips
-            .lock()
-            .unwrap()
-            .iter()
-            .filter(|c| c.thumb.is_none())
-            .map(|c| (c.id.clone(), c.path.clone(), c.duration))
-            .collect()
+    /// Thumbnails to make, newest clip first, skipping file names in `failed`: the first trimmed frame of each clip
+    /// trimmed at the start that doesn't show it yet, and one a little way in for each other clip with no thumbnail
+    /// (including a trimmed one whose own couldn't be made).
+    pub fn thumbs_wanted(&self, failed: &HashSet<String>) -> Vec<ThumbJob> {
+        let clips = self.clips.lock().unwrap();
+        let mut jobs = Vec::new();
+        for c in clips.iter() {
+            let shows = |name: &str| c.thumb.as_deref().and_then(|t| Path::new(t).file_name()).map_or(false, |n| n == name);
+            let job = |at: f64, name: String| ThumbJob { id: c.id.clone(), path: c.path.clone(), at, name };
+            if let Some((at, name)) = trim_thumb(&c.id, c.edits.as_ref()) {
+                if shows(&name) {
+                    continue;
+                }
+                if !failed.contains(&name) {
+                    jobs.push(job(at, name));
+                    continue;
+                }
+            }
+            let name = format!("{}.jpg", c.id);
+            if c.thumb.is_none() && !failed.contains(&name) {
+                jobs.push(job(default_thumb_at(c.duration), name));
+            }
+        }
+        jobs
+    }
+
+    /// The trimmed-clip thumbnails still in use or wanted (prune_trim_thumbs deletes the rest).
+    pub fn trim_thumbs_in_use(&self) -> HashSet<String> {
+        let clips = self.clips.lock().unwrap();
+        let mut keep = HashSet::new();
+        for c in clips.iter() {
+            if let Some(name) = c.thumb.as_deref().and_then(|t| Path::new(t).file_name()) {
+                keep.insert(name.to_string_lossy().into_owned());
+            }
+            if let Some((_, name)) = trim_thumb(&c.id, c.edits.as_ref()) {
+                keep.insert(name);
+            }
+        }
+        keep
     }
 
     fn with_entry<F: FnOnce(&mut UserEntry)>(&self, id: &str, f: F) -> Result<(), String> {
@@ -616,7 +690,16 @@ mod tests {
             unreadable: Mutex::new(HashMap::new()),
             wave_base: Mutex::new(HashMap::new()),
             thumbs_busy: AtomicBool::new(false),
+            thumbs_again: AtomicBool::new(false),
         }
+    }
+
+    fn trimmed(id: &str, in_t: f64, thumb: Option<&str>) -> Clip {
+        Clip { edits: Some(Edits { in_t, out_t: 40.0, markers: vec![] }), thumb: thumb.map(str::to_string), ..clip(id) }
+    }
+
+    fn names(jobs: &[ThumbJob]) -> Vec<&str> {
+        jobs.iter().map(|j| j.name.as_str()).collect()
     }
 
     /// After a save, the new clip's thumbnail is given to that one clip instead of rescanning the library (276 files, a
@@ -627,10 +710,65 @@ mod tests {
         lib.set_thumb("b", r"C:\Thumbs\b.jpg");
         assert_eq!(lib.get("b").unwrap().thumb.as_deref(), Some(r"C:\Thumbs\b.jpg"));
         assert_eq!(lib.get("a").unwrap().thumb, None);
-        let missing: Vec<String> = lib.missing_thumbs().into_iter().map(|(id, _, _)| id).collect();
-        assert_eq!(missing, vec!["a".to_string()]);
+        assert_eq!(names(&lib.thumbs_wanted(&HashSet::new())), vec!["a.jpg"]);
         lib.set_thumb("gone", r"C:\Thumbs\gone.jpg"); // a clip deleted meanwhile: nothing to do
         assert_eq!(lib.clips.lock().unwrap().len(), 2);
+    }
+
+    /// A clip trimmed at the start shows the first frame of its trim, the one its exports start on; one that isn't
+    /// (or is only trimmed at the end) keeps GG's thumbnail, or gets one a little way in.
+    #[test]
+    fn trimmed_clips_show_their_first_trimmed_frame() {
+        let lib = library(vec![
+            clip("a"),                                               // no thumbnail: one 3 s in
+            Clip { thumb: Some(r"C:\Moments\thumbs\b-1-thumb.jpg".into()), ..clip("b") }, // GG's: kept
+            trimmed("c", 12.345, Some(r"C:\Moments\thumbs\c-1-thumb.jpg")), // GG's, but trimmed: the In point
+            trimmed("d", 0.0, None),                                 // only the end trimmed: as untrimmed
+            trimmed("e", 7.5, Some(r"C:\Cache\thumbs\e-in-7500.jpg")),   // already shows its In point
+            trimmed("f", 9.0, Some(r"C:\Cache\thumbs\f-in-7500.jpg")),   // the In point moved since
+        ]);
+        let jobs = lib.thumbs_wanted(&HashSet::new());
+        assert_eq!(names(&jobs), vec!["a.jpg", "c-in-12345.jpg", "d.jpg", "f-in-9000.jpg"]);
+        let at: Vec<f64> = jobs.iter().map(|j| j.at).collect();
+        assert_eq!(at, vec![3.0, 12.345, 3.0, 9.0]);
+        assert_eq!(jobs[1].path, r"C:\Clips\c.mp4");
+
+        // Short clips: 30% of the way in, not past the end.
+        let short = library(vec![Clip { duration: 2.0, ..clip("a") }]);
+        assert!((short.thumbs_wanted(&HashSet::new())[0].at - 0.6).abs() < 1e-9);
+    }
+
+    /// A thumbnail that couldn't be made isn't tried again on every rescan. A trimmed clip whose own failed still gets
+    /// an ordinary one if it has none, and keeps the one it has otherwise.
+    #[test]
+    fn failed_thumbnails_are_not_retried() {
+        let lib = library(vec![clip("a"), trimmed("b", 5.0, None), trimmed("c", 5.0, Some(r"C:\Cache\thumbs\c.jpg"))]);
+        let failed: HashSet<String> = ["a.jpg", "b-in-5000.jpg", "c-in-5000.jpg"].map(String::from).into();
+        assert_eq!(names(&lib.thumbs_wanted(&failed)), vec!["b.jpg"]);
+        let failed: HashSet<String> = ["b-in-5000.jpg", "b.jpg"].map(String::from).into();
+        assert_eq!(names(&lib.thumbs_wanted(&failed)), vec!["a.jpg", "c-in-5000.jpg"]);
+    }
+
+    /// Trimmed-clip thumbnails from an older trim, or a clip that's gone, are deleted; the ones shown or about to be
+    /// made, untrimmed ones, GG's, and anything else in the folder are left alone.
+    #[test]
+    fn old_trim_thumbnails_are_deleted() {
+        let dir = std::env::temp_dir().join(format!("backtrack-thumbs-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let shown = dir.join("e-in-7500.jpg").to_string_lossy().into_owned();
+        let lib = library(vec![trimmed("e", 9.0, Some(&shown)), clip("a")]);
+        let files = ["e-in-7500.jpg", "e-in-1000.jpg", "e-in-9000.part.jpg", "a.jpg", "9a7-in-1.jpg", "notes-in-5.jpg", "x-in-5.png"];
+        for f in files {
+            std::fs::write(dir.join(f), b"jpg").unwrap();
+        }
+        let keep = lib.trim_thumbs_in_use();
+        assert!(keep.contains("e-in-7500.jpg") && keep.contains("e-in-9000.jpg"), "{keep:?}");
+        prune_trim_thumbs(&dir, &keep);
+        let mut left: Vec<String> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        left.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(left, vec!["a.jpg", "e-in-7500.jpg", "e-in-9000.part.jpg", "notes-in-5.jpg", "x-in-5.png"]);
     }
 
     /// index.json is rewritten only when a scan changed the index: not when nothing is new, nor when the only files

@@ -875,7 +875,9 @@ async function restoreMoved(mv){
 
 /* ================================================================== EDITOR */
 const MIN_SEL=1;
-const ed={clip:null,dur:1,inT:0,outT:1,t:0,playing:false,loop:true,snap:true,zoom:1,canvas:'16:9',cropX:.5,preset:'d10',customMB:25,speed:1,tracks:[],markers:[],audio:[],gen:0};
+/* film: the thumbnail the preview poster and filmstrip use, picked when the clip opens. A trimmed clip's thumbnail
+   is its first trimmed frame, so it changes as you trim; the editor keeps the one it opened with. */
+const ed={clip:null,dur:1,inT:0,outT:1,t:0,playing:false,loop:true,snap:true,zoom:1,canvas:'16:9',cropX:.5,preset:'d10',customMB:25,speed:1,tracks:[],markers:[],audio:[],gen:0,film:''};
 const mixMem=new Map();   // per-clip volumes / mutes / canvas for this session (the contract has nowhere to save them)
 const tl={W:0,pps:1};
 const els={scroll:$('#tlScroll'),inner:$('#tlInner'),ruler:$('#ruler'),lanes:$('#lanes'),laneV:$('#laneV'),sel:$('#sel'),hIn:$('#hIn'),hOut:$('#hOut'),maskL:$('#maskL'),maskR:$('#maskR'),ph:$('#ph'),selLabel:$('#selLabel'),rulerSel:$('#rulerSel')};
@@ -966,7 +968,7 @@ function drawLane(t){
 }
 /* the video lane uses the clip thumbnail as its filmstrip */
 function renderFilm(){
-  const u=ed.clip.thumb?BT.src(ed.clip.thumb):'';
+  const u=ed.film?BT.src(ed.film):'';
   if(!u){els.laneV.innerHTML='';return;}
   const url=esc(u.replace(/'/g,'%27')),h=els.laneV.clientHeight||50,fw=Math.round(h*16/9),n=Math.ceil(tl.W/fw);let s='';
   for(let i=0;i<n;i++){const sx=50+Math.sin(i*.9)*22,sy=48+Math.cos(i*.55)*14,sc=118+Math.sin(i*.45)*14;
@@ -1349,7 +1351,7 @@ function openClip(c){
   ed.tracks=trackState(c,mem);
   hist.u.length=0;hist.r.length=0;hideGhost();
   setSaved(e?'ok':'none');
-  const pv=$('#pvImg'),tu=c.thumb?BT.src(c.thumb):'';
+  ed.film=c.thumb||'';const pv=$('#pvImg'),tu=ed.film?BT.src(ed.film):'';
   if(tu){pv.src=tu;pv.hidden=false;$('#pvPh').hidden=true;}else{pv.removeAttribute('src');pv.hidden=true;$('#pvPh').hidden=false;}
   syncClipChrome();
   $('#tTot').textContent='of '+fmt(dur);
@@ -2450,7 +2452,8 @@ async function refetch(){
     setClips(list);S.loaded=true;S.loadError=null;
     if(ed.clip){
       const n=S.byId[ed.clip.id];
-      if(n){const thumbChanged=n.thumb!==ed.clip.thumb;if(ed.clip.edits)n.edits=ed.clip.edits;ed.clip=n;syncClipChrome();if(thumbChanged&&n.thumb){$('#pvImg').src=BT.src(n.thumb);$('#pvImg').hidden=false;$('#pvPh').hidden=true;renderFilm();}}
+      // a clip opened before it had a thumbnail gets one; a new one from trimming waits for the clip to open again
+      if(n){if(ed.clip.edits)n.edits=ed.clip.edits;ed.clip=n;syncClipChrome();if(n.thumb&&!ed.film){ed.film=n.thumb;$('#pvImg').src=BT.src(n.thumb);$('#pvImg').hidden=false;$('#pvPh').hidden=true;renderFilm();}}
       else if(!exp.running){
         const inEd=cur()==='editor'||cur().startsWith('export');closeClip();
         if(inEd){toast('This clip was moved or deleted outside Backtrack','alert');go('library');}

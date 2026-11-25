@@ -172,20 +172,25 @@ fn prune(dir: &Path, keep: usize) {
     }
 }
 
-/// Grab one frame as a 480px-wide JPG thumbnail, on one thread each for decoding, scaling and encoding. By default
-/// ffmpeg starts threads for every CPU (39 in all here) for one frame: 39% more CPU time, all at once, and often
-/// right after a save while a game runs. One thread takes ~0.4 s instead of ~0.2 s, in the background.
-pub fn generate_thumb(tools: &Tools, clip_path: &str, duration: f64, out: &Path) -> bool {
+/// Grab the frame `at` seconds in as a 480px-wide JPG thumbnail, on one thread each for decoding, scaling and
+/// encoding. By default ffmpeg starts threads for every CPU (39 in all here) for one frame: 39% more CPU time, all at
+/// once, and often right after a save while a game runs. One thread takes ~0.4 s instead of ~0.2 s, in the background.
+pub fn generate_thumb(tools: &Tools, clip_path: &str, at: f64, out: &Path) -> bool {
     let tmp = out.with_extension("part.jpg");
-    let ok = thumb_cmd(tools, clip_path, duration, &tmp).status().map(|s| s.success()).unwrap_or(false);
-    ok && std::fs::rename(&tmp, out).is_ok()
+    let ok = thumb_cmd(tools, clip_path, at, &tmp).status().map(|s| s.success()).unwrap_or(false);
+    let ok = ok && tmp.is_file() && std::fs::rename(&tmp, out).is_ok();
+    if !ok {
+        let _ = std::fs::remove_file(&tmp);
+    }
+    ok
 }
 
-/// generate_thumb's ffmpeg command, writing to `tmp` (built apart so a test can check its arguments).
-fn thumb_cmd(tools: &Tools, clip_path: &str, duration: f64, tmp: &Path) -> std::process::Command {
-    let at = (duration * 0.3).clamp(0.0, 3.0);
+/// generate_thumb's ffmpeg command, writing to `tmp` (built apart so a test can check its arguments). It seeks the
+/// way an export does (-ss to the millisecond, before the input), so a trimmed clip's thumbnail is exactly the frame
+/// its exports start on.
+fn thumb_cmd(tools: &Tools, clip_path: &str, at: f64, tmp: &Path) -> std::process::Command {
     let mut cmd = tools.ffmpeg_cmd();
-    cmd.args(["-v", "error", "-y", "-threads", "1", "-ss", &format!("{at:.2}"), "-i", clip_path, "-frames:v", "1"])
+    cmd.args(["-v", "error", "-y", "-threads", "1", "-ss", &format!("{at:.3}"), "-i", clip_path, "-frames:v", "1"])
         .args(["-filter_threads", "1", "-threads", "1"])
         .args(["-vf", "scale=480:-2", "-q:v", "4"])
         .arg(tmp)
@@ -210,13 +215,13 @@ mod tests {
     #[test]
     fn thumbnail_runs_on_one_thread_each() {
         let tools = Tools { ffmpeg: "ffmpeg.exe".into(), ffprobe: "ffprobe.exe".into() };
-        let cmd = thumb_cmd(&tools, r"C:\Clips\a.mp4", 60.0, Path::new(r"C:\Thumbs\a.part.jpg"));
+        let cmd = thumb_cmd(&tools, r"C:\Clips\a.mp4", 3.0, Path::new(r"C:\Thumbs\a.part.jpg"));
         let args: Vec<String> = cmd.get_args().map(|a| a.to_string_lossy().into_owned()).collect();
         let input = args.iter().position(|a| a == "-i").expect("an input");
         let (before, after) = args.split_at(input);
         let has = |part: &[String], k: &str, v: &str| part.windows(2).any(|w| w[0] == k && w[1] == v);
         assert!(has(before, "-threads", "1"), "decoder on one thread: {args:?}");
-        assert!(has(before, "-ss", "3.00"), "seeks before opening the clip: {args:?}");
+        assert!(has(before, "-ss", "3.000"), "seeks before opening the clip, to the millisecond like an export: {args:?}");
         assert!(has(after, "-filter_threads", "1"), "scaler on one thread: {args:?}");
         assert!(has(after, "-threads", "1"), "encoder on one thread: {args:?}");
         assert!(has(after, "-frames:v", "1"), "one frame: {args:?}");

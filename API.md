@@ -32,7 +32,9 @@ type Clip = {
   audioTracks: { index: number; name: string; channels: number }[];
       // index = audio-stream index (0-based). name comes from the stream's handler ("Game", "Chat", "Mic"), or "Track N".
       // UI label mapping: Game → "Game", Chat → "Voice chat", Mic → "Mic".
-  thumb: string | null;    // absolute path to a JPG (GG's thumbnail, or one Backtrack generated); null while not ready yet
+  thumb: string | null;    // absolute path to a JPG (GG's thumbnail, or one Backtrack generated); null while not ready yet.
+      // A clip trimmed at the start (edits.inT > 0) shows its first trimmed frame, the one its exports start on, once
+      // that's been made (after a save_edits that moved In, in the background); the path changes with each new In point.
   fav: boolean;
   edits: { inT: number; outT: number; markers: number[] } | null;
       // Backtrack's saved In/Out (or GG's own trim points when the clip was trimmed in GG); null = never trimmed
@@ -87,7 +89,7 @@ type ExportProgress = { stage: "analyse" | "encode" | "copy" | "finish"; percent
 | `save_settings` | `{ settings: Settings }` | `Settings` | Changing `clipDirs` triggers a rescan and a `library-changed` event. |
 | `list_clips` | none | `Clip[]` | Newest first. The first call scans and probes (cached on disk afterwards, so it's fast). |
 | `set_favourite` | `{ clipId, fav }` | none | |
-| `save_edits` | `{ clipId, edits: { inT, outT, markers } }` | none | Debounce calls (≈400 ms). |
+| `save_edits` | `{ clipId, edits: { inT, outT, markers } }` | none | Debounce calls (≈400 ms). A new In point starts making the clip's new thumbnail (its first trimmed frame); `library-changed` follows when it's ready. |
 | `get_waveform` | `{ clipId, track, points }` | `number[]` | `track` = audio index, `points` = how many peaks (0..1) to return, spread over the whole clip. Cached. ≈0.3–1 s the first time. |
 | `get_keyframes` | `{ clipId }` | `number[]` | Keyframe times in seconds, sorted. Read from the packet index with ffprobe (no decoding, ≈0.2 s for 200 MB; cached). The editor uses them to scrub fast: while a drag moves quickly it seeks to the nearest keyframe (≈10 ms to decode) and lands on the exact frame when the drag slows or stops. |
 | `prepare_audio` | `{ clipId }` | `{ index, name, path }[]` | Extracts each audio track to its own .m4a (stream copy, cached) so the editor can play every track at its own volume with `<audio>` elements kept in sync with a **muted** `<video>`. |

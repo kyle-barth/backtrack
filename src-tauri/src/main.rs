@@ -151,29 +151,52 @@ fn start_watcher(app: &AppHandle, st: &Arc<AppState>) {
     });
 }
 
-/// Generate thumbnails for clips that don't have one (GG usually provides them).
+/// Make the thumbnails the library is missing: one for a clip that has none (GG usually provides them), and the first
+/// trimmed frame of a clip trimmed at the start. One run at a time; asking during a run (a trim saved meanwhile) makes
+/// it look again before it stops. The window hears `library-changed` as thumbnails arrive, at most every 2 s.
 fn spawn_thumbs(app: AppHandle, st: Arc<AppState>) {
+    st.lib.thumbs_again.store(true, Ordering::SeqCst);
     if st.lib.thumbs_busy.swap(true, Ordering::SeqCst) {
         return;
     }
     std::thread::spawn(move || {
-        let failed = st.thumb_failed.lock().unwrap().clone();
-        let missing: Vec<_> = st.lib.missing_thumbs().into_iter().filter(|(id, _, _)| !failed.contains(id)).collect();
+        let dir = util::cache_sub("thumbs");
         let mut made = 0;
-        if let (Some(tools), false) = (st.tools(), missing.is_empty()) {
-            let dir = util::cache_sub("thumbs");
-            for (id, path, dur) in missing {
-                let out = dir.join(format!("{id}.jpg"));
-                if media::generate_thumb(&tools, &path, dur, &out) {
-                    // Just this clip changed: no need to rescan the whole library.
-                    st.lib.set_thumb(&id, &out.to_string_lossy());
-                    made += 1;
-                } else {
-                    st.thumb_failed.lock().unwrap().insert(id);
+        let mut told = std::time::Instant::now();
+        loop {
+            while st.lib.thumbs_again.swap(false, Ordering::SeqCst) {
+                let failed = st.thumb_failed.lock().unwrap().clone();
+                let jobs = st.lib.thumbs_wanted(&failed);
+                let Some(tools) = st.tools().filter(|_| !jobs.is_empty()) else { continue };
+                for job in jobs {
+                    let out = dir.join(&job.name);
+                    if media::generate_thumb(&tools, &job.path, job.at, &out) {
+                        // Just this clip changed: no need to rescan the whole library.
+                        st.lib.set_thumb(&job.id, &out.to_string_lossy());
+                        made += 1;
+                    } else {
+                        util::log("warn", &format!("couldn't make a thumbnail {:.3} s into {}", job.at, job.path));
+                        st.thumb_failed.lock().unwrap().insert(job.name);
+                    }
+                    if made > 0 && told.elapsed() >= Duration::from_secs(2) {
+                        let _ = app.emit("library-changed", ());
+                        (made, told) = (0, std::time::Instant::now());
+                    }
+                    // Asked again meanwhile (a trim saved, a rescan): take the new list rather than finish this one.
+                    if st.lib.thumbs_again.load(Ordering::SeqCst) {
+                        break;
+                    }
                 }
             }
+            // Thumbnails of old trims go once a run of the app (an open editor may still show the one it opened with).
+            static PRUNE: std::sync::Once = std::sync::Once::new();
+            PRUNE.call_once(|| library::prune_trim_thumbs(&dir, &st.lib.trim_thumbs_in_use()));
+            st.lib.thumbs_busy.store(false, Ordering::SeqCst);
+            // Asked again after the last look but before the flag above cleared: look again, unless a new run started.
+            if !st.lib.thumbs_again.load(Ordering::SeqCst) || st.lib.thumbs_busy.swap(true, Ordering::SeqCst) {
+                break;
+            }
         }
-        st.lib.thumbs_busy.store(false, Ordering::SeqCst);
         if made > 0 {
             let _ = app.emit("library-changed", ());
         }
@@ -222,8 +245,15 @@ fn set_favourite(state: St, clip_id: String, fav: bool) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn save_edits(state: St, clip_id: String, edits: Edits) -> Result<(), String> {
-    state.lib.save_edits(&clip_id, edits)
+fn save_edits(app: AppHandle, state: St, clip_id: String, edits: Edits) -> Result<(), String> {
+    let was = state.lib.get(&clip_id).and_then(|c| c.edits).map(|e| e.in_t);
+    let in_t = edits.in_t;
+    state.lib.save_edits(&clip_id, edits)?;
+    // A new In point means a new thumbnail: the first frame of the trim.
+    if was != Some(in_t) {
+        spawn_thumbs(app, state.inner().clone());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -746,7 +776,7 @@ mod e2e {
         println!("scanned {} clips in {:.1}s", clips.len(), t.elapsed().as_secs_f64());
         let games: HashSet<&str> = clips.iter().map(|c| c.game.as_str()).collect();
         println!("games: {games:?}");
-        println!("missing thumbs: {}", lib.missing_thumbs().len());
+        println!("thumbnails to make: {}", lib.thumbs_wanted(&HashSet::new()).len());
         let clip = clips.iter().find(|c| c.file_name == "Rocket-League__2026-11-20__00-01-27.mp4").expect("RL clip");
         println!("clip: {} {}x{}@{:.0} {:.2}s tracks={:?} edits={:?} thumb={:?}",
             clip.game, clip.width, clip.height, clip.fps, clip.duration,
