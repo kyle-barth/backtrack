@@ -21,13 +21,42 @@ pub struct AudioTrack {
     pub channels: u32,
 }
 
-#[derive(Clone, Serialize, Deserialize, Debug, Default)]
+#[derive(Clone, Serialize, Deserialize, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct Edits {
     pub in_t: f64,
     pub out_t: f64,
     #[serde(default)]
     pub markers: Vec<f64>,
+    /// The frame exports get, which thumbnails show too: "original", "16:9" (a crop of a clip wider than that, like
+    /// an ultrawide one) or "9:16" (vertical). Edits saved before v0.4.9 have none: the original frame.
+    #[serde(default = "original_canvas")]
+    pub canvas: String,
+    /// Where a crop sits in the room it leaves: across (0 = left edge, 1 = right edge) and down (0 = top, 1 = bottom).
+    #[serde(default = "half")]
+    pub crop_x: f64,
+    #[serde(default = "half")]
+    pub crop_y: f64,
+    /// How much of the clip's height a crop keeps (1 = all of it): smaller to frame a game in a window, like one on
+    /// half of an ultrawide screen.
+    #[serde(default = "whole")]
+    pub crop_h: f64,
+}
+
+fn original_canvas() -> String {
+    "original".into()
+}
+fn half() -> f64 {
+    0.5
+}
+fn whole() -> f64 {
+    1.0
+}
+
+impl Default for Edits {
+    fn default() -> Self {
+        Edits { in_t: 0.0, out_t: 0.0, markers: vec![], canvas: original_canvas(), crop_x: half(), crop_y: half(), crop_h: whole() }
+    }
 }
 
 #[derive(Clone, Serialize, Deserialize, Debug)]
@@ -220,7 +249,7 @@ impl Library {
             for entry in rd.flatten() {
                 let path = entry.path();
                 let ext = path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                if !CLIP_EXTS.contains(&ext.as_str()) {
+                if !CLIP_EXTS.contains(&ext.as_str()) || util::is_partial(&path) {
                     continue;
                 }
                 let Ok(meta) = entry.metadata() else { continue };
@@ -299,8 +328,8 @@ impl Library {
             let dir = f.path.parent().map(Path::to_path_buf).unwrap_or_default();
             let user = store.clips.get(&f.key).cloned().unwrap_or_default();
             let edits = user.edits.clone().or_else(|| {
-                p.gg_trim.map(|(a, b)| Edits { in_t: a, out_t: b, markers: vec![] }).or_else(|| {
-                    (!p.bt_markers.is_empty()).then(|| Edits { in_t: 0.0, out_t: p.duration, markers: p.bt_markers.clone() })
+                p.gg_trim.map(|(a, b)| Edits { in_t: a, out_t: b, ..Edits::default() }).or_else(|| {
+                    (!p.bt_markers.is_empty()).then(|| Edits { out_t: p.duration, markers: p.bt_markers.clone(), ..Edits::default() })
                 })
             });
             // A clip trimmed at the start shows its first trimmed frame once that's been made (thumbs_wanted); until
@@ -671,6 +700,17 @@ mod tests {
         assert_eq!(again.clips["c:\\clips\\a.mp4"].edits.as_ref().unwrap().in_t, 1.0);
     }
 
+    /// The Canvas is saved with the edits (v0.4.9), so thumbnails and exports keep the crop. Edits saved before have
+    /// none: the original frame, with a crop starting in the middle.
+    #[test]
+    fn canvas_and_crop_are_saved_with_the_edits() {
+        let old: Edits = serde_json::from_str(r#"{"inT":12.5,"outT":30.25,"markers":[15.0]}"#).unwrap();
+        assert_eq!((old.canvas.as_str(), old.crop_x), ("original", 0.5));
+        let new: Edits = serde_json::from_str(r#"{"inT":0,"outT":45,"canvas":"16:9","cropX":0.316}"#).unwrap();
+        let back: Value = serde_json::to_value(&new).unwrap();
+        assert_eq!((back["canvas"].as_str(), back["cropX"].as_f64()), (Some("16:9"), Some(0.316)));
+    }
+
     fn clip(id: &str) -> Clip {
         Clip {
             id: id.into(), path: format!("C:\\Clips\\{id}.mp4"), file_name: format!("{id}.mp4"), game: "Rocket League".into(),
@@ -695,7 +735,7 @@ mod tests {
     }
 
     fn trimmed(id: &str, in_t: f64, thumb: Option<&str>) -> Clip {
-        Clip { edits: Some(Edits { in_t, out_t: 40.0, markers: vec![] }), thumb: thumb.map(str::to_string), ..clip(id) }
+        Clip { edits: Some(Edits { in_t, out_t: 40.0, ..Edits::default() }), thumb: thumb.map(str::to_string), ..clip(id) }
     }
 
     fn names(jobs: &[ThumbJob]) -> Vec<&str> {

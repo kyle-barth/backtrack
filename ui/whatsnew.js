@@ -16,6 +16,12 @@
                      and its notes wait to be shown with the next release that has one. }
    ===================================================================== */
 window.BT_NOTES = [
+  { version: '0.4.9', date: '2026-11-27', title: 'Ultrawide crops and safer saves', items: [
+    { kind: 'new', text: 'Crop ultrawide clips to 16:9', more: 'In the editor’s Canvas, drag the crop onto your game and resize it to fit, so the export shows just the game. Backtrack remembers it for each clip.', highlight: true },
+    { kind: 'fixed', text: 'Saving a clip no longer fails with “being used by another process”', more: 'Clips that didn’t finish saving because of it are recovered when Backtrack starts.', highlight: true },
+    { kind: 'improved', text: 'Thumbnails show how a clip will export', more: 'Cropped clips show just the cropped part, and ultrawide ones show the whole frame with black bars.' },
+    { kind: 'improved', text: 'Clips are named after your game even when another window is in front', more: 'As long as the game is still open. Once it’s closed, clips are desktop captures.' },
+  ] },
   { version: '0.4.8', date: '2026-11-25', title: 'Thumbnails follow your trim', items: [
     { kind: 'improved', text: 'A trimmed clip’s thumbnail shows where it starts', more: 'Move the In point and the thumbnail becomes the first frame of your trim, the one your export starts on. Clips you’ve already trimmed get theirs too.', highlight: true },
   ] },

@@ -113,9 +113,12 @@ fn start_watcher(app: &AppHandle, st: &Arc<AppState>) {
     let (tx, rx) = mpsc::channel::<()>();
     let watcher = notify::recommended_watcher(move |res: notify::Result<notify::Event>| {
         if let Ok(ev) = res {
+            // A clip still being saved (name.part.mp4) isn't one yet: its rename to name.mp4 is the change to tell.
+            // Rescanning mid-save had the library open the unfinished file, so the rename failed ("being used by
+            // another process") and the clip was lost.
             let is_clip = ev.paths.iter().any(|p| {
                 let e = p.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default();
-                matches!(e.as_str(), "mp4" | "mov" | "mkv")
+                matches!(e.as_str(), "mp4" | "mov" | "mkv") && !util::is_partial(p)
             });
             if is_clip {
                 let _ = tx.send(());
@@ -664,7 +667,10 @@ fn main() {
         })
         .setup(move |app| {
             let handle = app.handle().clone();
-            let _ = std::fs::create_dir_all(&state.settings.lock().unwrap().recorder.clips_dir);
+            let clips_dir = state.settings.lock().unwrap().recorder.clips_dir.clone();
+            let _ = std::fs::create_dir_all(&clips_dir);
+            // Clips whose save didn't get to rename them (name.part.mp4) get their names now, before the first scan.
+            recorder::recover_unfinished(Path::new(&clips_dir));
             allow_dirs(&handle, &allowed_dirs(&state));
             start_watcher(&handle, &state);
             // Warm the library in the background so the first list_clips is quick.
@@ -792,11 +798,11 @@ mod e2e {
         let out_dir = util::cache_sub("e2e-exports");
         let job = Job::default();
         let ctx = export::ExportCtx { tools: &tools, clip, out_dir: out_dir.clone(), job: &job };
-        let edits = clip.edits.clone().unwrap_or(Edits { in_t: 24.0, out_t: 48.0, markers: vec![] });
+        let edits = clip.edits.clone().unwrap_or(Edits { in_t: 24.0, out_t: 48.0, ..Edits::default() });
         for (preset, limit, canvas) in [("d10", Some(10.0), "16:9"), ("d10", Some(10.0), "9:16")] {
             let req = ExportRequest {
                 clip_id: clip.id.clone(), start: edits.in_t, end: edits.out_t, preset: preset.into(), limit_mb: limit,
-                canvas: canvas.into(), crop_x: 0.5,
+                canvas: canvas.into(), crop_x: 0.5, crop_y: 0.5, crop_h: 1.0,
                 tracks: vec![
                     export::TrackMix { index: 0, volume: 1.0, muted: false },
                     export::TrackMix { index: 1, volume: 0.8, muted: false },

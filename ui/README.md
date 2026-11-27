@@ -32,7 +32,7 @@ Every call returns a Promise. Failures reject with the backend's human-readable 
 | `listClips()` | `list_clips` |
 | `setFavourite(clipId, fav)` | `set_favourite { clipId, fav }` |
 | `setFavourites(clipIds, fav)` | `set_favourites { clipIds, fav }` (bulk, one write) |
-| `saveEdits(clipId, {inT,outT,markers})` | `save_edits { clipId, edits }` (the UI debounces it by 400 ms) |
+| `saveEdits(clipId, {inT,outT,markers,canvas,cropX,cropY,cropH})` | `save_edits { clipId, edits }` (the UI debounces it by 400 ms) |
 | `getWaveform(clipId, track, points)` | `get_waveform { clipId, track, points }` |
 | `getKeyframes(clipId)` | `get_keyframes { clipId }` |
 | `prepareAudio(clipId)` | `prepare_audio { clipId }` |
@@ -71,7 +71,7 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
 - **Export:** it mirrors the backend maths (copy versus encode, ladder, never upscales) and emits `export-progress` in the real stage order (`analyse` 0–30 %, `encode` 30–97 %, `finish` 100; copy mode sends `copy` then `finish`). It runs about 3× faster than real x264 so tests finish quickly, rejects with `"cancelled"` on cancel, records an `ExportRecord`, and de-duplicates file names.
 - **Folders:** `list_clips` only returns clips under the current `clipDirs`, so removing the folder empties the library just as the real backend would. `trash_clip` and `save_settings` (when the folders change) emit `library-changed`.
 - **Flags:** put them in the query string or after `?` in the hash, e.g. `index.html#library?mock=empty`, comma-separated:
-  `empty` (only the recorder's empty folder), `missing` (a folder with no clips), `noffmpeg`, `exportfail` (first export fails part-way, to test Retry), `slow` (first scan takes 6 s), `static`.
+  `empty` (only the recorder's empty folder), `missing` (a folder with no clips), `noffmpeg`, `exportfail` (first export fails part-way, to test Retry), `slow` (first scan takes 6 s), `static`, `ultrawide` (every clip is 3440×1440, so the 16:9 crop canvas shows; pair it with `thumbs=` pointing at 21:9 images).
   `trashfail=N` (its own parameter, e.g. `index.html?trashfail=2#library`): the first N clips sent to `trash_clips` fail with "The file is open in another program", to test the partial-failure dialog and Try again. `trash_clips` takes about 30 ms per clip so the busy state shows.
   `binfull=1` and `nuke=1` (also their own parameters): `trash_check` reports the Recycle Bin on the clips' drive as holding only 2 GB (bigger batches don't fit), or that drive as deleting straight away. `restore_clips` puts back what `trash_clips` / `trash_clip` moved in this session.
   `mixed=1` puts PEAK's clips on a D: drive with no Recycle Bin (a mixed-drive batch: "Move N, skip D:"), and `checkms=N` makes `trash_check` take N ms (e.g. `checkms=1500`, to see OK wait for the check).
@@ -89,6 +89,7 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
   - **Audio:** `prepare_audio` gives one `<audio>` per track, re-synced on play, pause, seek and rate change, and every 250 ms whenever it drifts more than 80 ms. Lane volume and mute set `audio.volume` (times the preview volume).
   - **Fallback:** if the video can't play, it falls back to a clock with the thumbnail and a "Preview unavailable · it still exports" note.
 - **Lanes:** built from `clip.audioTracks` (Game → "Game", Chat → "Voice chat", Mic → "Mic", anything else keeps its name). Lane colours are kept. Waveforms come from `get_waveform` with `points` sized to the timeline width (rounded up to 256, re-requested when you zoom in), with a shimmer until they arrive.
+- **Canvas:** Original and Vertical 9:16, plus a 16:9 crop for a clip wider than 16:9 (ultrawide), the three as one row of compact tiles. A crop window shows over the video: drag it to move it, drag its corner or scroll over it to resize it (down to 30% of the height), or focus it and use the arrow keys, + and −, Home and End. Switching between the two crops keeps it centred on the same spot. The canvas and crop save with the edits, and every thumbnail of the clip (library cards, which also say "16:9 crop" or "9:16", and the export screens) shows the same frame: a clip that isn't 16:9 whole with black bars, a crop just the part it keeps.
 - **Edits:** In/Out and markers load from `clip.edits` (else 0..duration) and save through a debounced `save_edits`. The "Edits saved" indicator reflects the real save state. A trimmed clip's thumbnail becomes its first trimmed frame; the editor's poster and filmstrip keep the thumbnail the clip opened with. M adds a marker at the playhead; Delete or Backspace removes the one under it (with Undo).
 - **Export:** keeps the prototype's `estimate()` and ladder. The time estimate now uses the measured x264 numbers: max(3, dur × 0.45) s for encode, max(1, dur / 40) s for copy. E, the split button and the rail build an `ExportRequest` and call `export_clip`.
   - **Progress and errors:** progress comes from `export-progress`, and Cancel calls `cancel_export`. Errors show an inline error view with the backend message, **Retry** (same request) and **Export options…**.
@@ -116,7 +117,7 @@ I checked the real branch by running the UI against a fake `window.__TAURI__` th
 None of these needed a new command. They're things the UI would use if the contract grew:
 
 1. **No rename command.** The editor title is no longer clickable (the prototype's pencil/"Rename" affordance is gone).
-2. **Only In/Out/markers are persisted.** Track volumes and mutes, canvas (16:9 / 9:16) and the crop position aren't in `Clip.edits`, so the UI keeps them per clip for the session only. The "Edits saved" tooltip now says "In / Out and markers". Suggested: `edits.tracks[]`, `edits.canvas`, `edits.cropX`.
+2. **Track volumes and mutes aren't persisted.** They aren't in `Clip.edits`, so the UI keeps them per clip for the session only. (The canvas and crop are saved since v0.4.9: `edits.canvas`, `edits.cropX`, `cropY`, `cropH`.) Suggested: `edits.tracks[]`.
 3. **No video codec on `Clip`.** WebView2 can't play some codecs (e.g. HEVC without the extension, possibly AV1). The UI only finds out when `<video>` errors, then shows "Preview unavailable · it still exports". A `videoCodec` field would let it warn earlier, and Clip details could show the codec again (the prototype's "H.264" was removed because it was invented).
 4. **No disk free space.** The storage card shows the clip folder instead of the prototype's "1.31 TB free".
 5. **No per-folder status.** The UI can't tell "folder missing" from "folder has no clips", so the empty state and the folder rows cover both in one sentence. Suggested: `Settings.clipDirStatus[{path, exists, clips}]`.

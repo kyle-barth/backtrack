@@ -18,7 +18,7 @@ use std::path::Path;
 use std::process::{Child, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 const TS: usize = 188;
 const VIDEO_PID: u16 = 0x100;
@@ -732,9 +732,81 @@ impl Recorder {
             util::log("error", &format!("saving clip failed: {err}"));
             return Err(format!("Couldn't save the clip: {}", err.lines().last().unwrap_or("ffmpeg failed")));
         }
-        std::fs::rename(&part, &out).map_err(|e| e.to_string())?;
+        finish_clip(&part, &out, 20, Duration::from_millis(200))?;
         util::log("info", &format!("saved replay {} ({duration:.1}s, game {game})", out.display()));
         Ok(Saved { path: out.to_string_lossy().into_owned(), game: game.to_string(), duration, at: now })
+    }
+}
+
+/// Give a saved clip its name: `name.part.mp4` → `name.mp4`. Windows refuses the rename while another program has
+/// the new file open (an antivirus or the search indexer looking at it, "being used by another process"), so it's
+/// tried `tries` times, `pause` apart, and then the clip is copied to its name instead. If even that fails, the
+/// clip stays as `name.part.mp4` and gets its name the next time Backtrack starts (recover_unfinished).
+fn finish_clip(part: &Path, out: &Path, tries: u32, pause: Duration) -> Result<(), String> {
+    let mut last = None;
+    for i in 0..tries.max(1) {
+        match std::fs::rename(part, out) {
+            Ok(()) => {
+                if i > 0 {
+                    util::log("info", &format!("renaming the new clip worked on try {}", i + 1));
+                }
+                return Ok(());
+            }
+            Err(e) => last = Some(e),
+        }
+        std::thread::sleep(pause);
+    }
+    let e = last.map(|e| e.to_string()).unwrap_or_default();
+    util::log("warn", &format!("couldn't rename {} ({e}), copying it instead", part.display()));
+    match std::fs::copy(part, out) {
+        Ok(_) => {
+            // If the other program still has it open, the leftover goes at the next start (recover_unfinished).
+            let _ = std::fs::remove_file(part);
+            Ok(())
+        }
+        Err(e2) => {
+            let _ = std::fs::remove_file(out);
+            util::log("error", &format!("couldn't copy {} either: {e2}", part.display()));
+            Err("Another program kept the new clip busy, so it couldn't be finished. It will appear in your library \
+                 the next time Backtrack starts."
+                .into())
+        }
+    }
+}
+
+/// Clips a save didn't finish naming (`name.part.mp4`, from a rename that failed, also in versions before 0.4.9,
+/// which lost them) get their names. The clip in such a file is whole: ffmpeg had finished writing it. Run at
+/// startup before the library looks, for files over two minutes old (nothing is being saved then). A leftover whose
+/// clip was copied to its name already (finish_clip) is deleted instead.
+pub fn recover_unfinished(dir: &Path) {
+    let Ok(rd) = std::fs::read_dir(dir) else { return };
+    for e in rd.flatten() {
+        let part = e.path();
+        let is_mp4 = part.extension().map_or(false, |x| x.eq_ignore_ascii_case("mp4"));
+        if !is_mp4 || !util::is_partial(&part) {
+            continue;
+        }
+        let Ok(meta) = e.metadata() else { continue };
+        let age = meta.modified().ok().and_then(|m| m.elapsed().ok()).unwrap_or_default();
+        if age < Duration::from_secs(120) {
+            continue;
+        }
+        // "name.part.mp4" → "name"
+        let Some(base) = part.file_stem().and_then(|s| Path::new(s).file_stem()).map(|s| s.to_string_lossy().into_owned())
+        else {
+            continue;
+        };
+        let named = dir.join(format!("{base}.mp4"));
+        if std::fs::metadata(&named).map_or(false, |m| m.len() == meta.len()) {
+            let _ = std::fs::remove_file(&part);
+            util::log("info", &format!("deleted {}: its clip was already saved", part.display()));
+            continue;
+        }
+        let to = util::unique_path(dir, &base, "mp4");
+        match std::fs::rename(&part, &to) {
+            Ok(()) => util::log("info", &format!("recovered an unfinished save: {}", to.display())),
+            Err(e) => util::log("warn", &format!("couldn't recover {}: {e}", part.display())),
+        }
     }
 }
 
@@ -746,6 +818,104 @@ mod frame_test;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A temp folder with a saved-but-unnamed clip in it.
+    fn save_dir(name: &str) -> (std::path::PathBuf, std::path::PathBuf, std::path::PathBuf) {
+        let dir = std::env::temp_dir().join(format!("backtrack-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let part = dir.join("FC__2026-11-27__02-06-25.part.mp4");
+        std::fs::write(&part, vec![7u8; 100_000]).unwrap();
+        let out = dir.join("FC__2026-11-27__02-06-25.mp4");
+        (dir, part, out)
+    }
+
+    /// Open `p` the way ffprobe or a virus scanner does: others may read it, but not rename or delete it.
+    fn hold(p: &Path, share: u32) -> std::fs::File {
+        use std::os::windows::fs::OpenOptionsExt;
+        std::fs::OpenOptions::new().read(true).share_mode(share).open(p).unwrap()
+    }
+
+    /// Clips lost in v0.4.8: the library had the new clip open as it was renamed, and the save failed with
+    /// "being used by another process". Now the rename is tried again for a while.
+    #[test]
+    fn a_clip_held_open_for_a_moment_still_gets_its_name() {
+        let (dir, part, out) = save_dir("finish-retry");
+        let f = hold(&part, 1);
+        let t = std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(300));
+            drop(f);
+        });
+        assert!(finish_clip(&part, &out, 40, Duration::from_millis(50)).is_ok());
+        t.join().unwrap();
+        assert!(out.is_file() && !part.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Held for longer: the clip is copied to its name, and the leftover goes at the next start.
+    #[test]
+    fn a_clip_held_open_for_long_is_copied_then_its_leftover_deleted() {
+        let (dir, part, out) = save_dir("finish-copy");
+        let f = hold(&part, 1);
+        assert!(finish_clip(&part, &out, 3, Duration::from_millis(10)).is_ok());
+        assert_eq!(std::fs::read(&out).unwrap().len(), 100_000);
+        assert!(part.exists(), "still held, so it couldn't be deleted yet");
+        drop(f);
+        let hour_ago = SystemTime::now() - Duration::from_secs(3600);
+        std::fs::File::options().write(true).open(&part).unwrap().set_modified(hour_ago).unwrap();
+        recover_unfinished(&dir);
+        assert!(!part.exists(), "a copy of a clip that's already saved is deleted");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Held so it can't even be read: the save says so in plain words, and the clip waits for the next start.
+    #[test]
+    fn a_clip_that_cant_be_finished_says_so_and_waits() {
+        let (dir, part, out) = save_dir("finish-fail");
+        let f = hold(&part, 0);
+        let err = finish_clip(&part, &out, 2, Duration::from_millis(10)).unwrap_err();
+        drop(f);
+        assert!(err.contains("next time Backtrack starts") && !err.contains("os error"), "{err}");
+        assert!(part.exists() && !out.exists());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// At startup, clips a save didn't name (also from versions before 0.4.9) get their names. One that's still
+    /// fresh, or any other file, is left alone; a name already taken gets " (2)".
+    #[test]
+    fn unfinished_saves_are_recovered_at_startup() {
+        let (dir, part, out) = save_dir("recover");
+        let old = SystemTime::now() - Duration::from_secs(3600);
+        let age = |p: &Path| std::fs::File::options().write(true).open(p).unwrap().set_modified(old).unwrap();
+        age(&part);
+        let taken = dir.join("FC__2026-11-27__02-33-51.part.mp4");
+        std::fs::write(&taken, b"a different clip").unwrap();
+        age(&taken);
+        std::fs::write(dir.join("FC__2026-11-27__02-33-51.mp4"), b"already here").unwrap();
+        let fresh = dir.join("FC__2026-11-27__02-40-00.part.mp4");
+        std::fs::write(&fresh, b"being saved").unwrap();
+        let export = dir.join("clip_discord.part.mov");
+        std::fs::write(&export, b"not a saved clip").unwrap();
+        age(&export);
+
+        recover_unfinished(&dir);
+        let mut names: Vec<String> =
+            std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name().to_string_lossy().into_owned()).collect();
+        names.sort();
+        let _ = std::fs::remove_dir_all(&dir);
+        assert!(out.file_name().is_some());
+        assert_eq!(
+            names,
+            vec![
+                "FC__2026-11-27__02-06-25.mp4",
+                "FC__2026-11-27__02-33-51 (2).mp4",
+                "FC__2026-11-27__02-33-51.mp4",
+                "FC__2026-11-27__02-40-00.part.mp4",
+                "clip_discord.part.mov",
+            ]
+        );
+    }
     #[test]
     fn dims() {
         assert_eq!(output_dims(2560, 1440, 1080), (1920, 1080));

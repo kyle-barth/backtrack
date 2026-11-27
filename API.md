@@ -36,8 +36,13 @@ type Clip = {
       // A clip trimmed at the start (edits.inT > 0) shows its first trimmed frame, the one its exports start on, once
       // that's been made (after a save_edits that moved In, in the background); the path changes with each new In point.
   fav: boolean;
-  edits: { inT: number; outT: number; markers: number[] } | null;
-      // Backtrack's saved In/Out (or GG's own trim points when the clip was trimmed in GG); null = never trimmed
+  edits: { inT: number; outT: number; markers: number[]; canvas: "original" | "16:9" | "9:16"; cropX: number; cropY: number; cropH: number } | null;
+      // Backtrack's saved In/Out (or GG's own trim points when the clip was trimmed in GG); null = never trimmed.
+      // canvas: the frame exports get, which the UI's thumbnails show too. "16:9" is a crop of a clip wider than that
+      // (an ultrawide one); a clip that isn't 16:9 shows whole with black bars on "original". cropH: how much of the
+      // height a crop keeps (0.3..1, 1 = all; smaller frames a game in a window). cropX / cropY: where it sits in the room
+      // left over, 0 = left / top edge, 1 = right / bottom edge.
+      // Edits saved before v0.4.9 have none of these: "original", 0.5, 0.5 and 1.
   exports: ExportRecord[]; // newest first
   source: "gg" | "backtrack";
 };
@@ -62,8 +67,9 @@ type ExportRequest = {
   start: number; end: number;            // seconds in the source clip
   preset: "d10" | "d50" | "d500" | "orig" | "custom";
   limitMb: number | null;                // the size limit (10/50/500/customMb); null for "orig"
-  canvas: "16:9" | "9:16";
-  cropX: number;                         // 0..1, horizontal crop centre for 9:16
+  canvas: "original" | "16:9" | "9:16";  // "16:9" crops a clip wider than 16:9 (otherwise it's the original frame)
+  cropX: number; cropY: number;          // 0..1: where a crop sits in the room left over, across and down
+  cropH: number;                         // 0.3..1: how much of the height a crop keeps; the export is never taller
   tracks: { index: number; volume: number /* 0..1.5 */; muted: boolean }[];
   fileName: string;                      // without ".mp4"; the backend sanitises it and de-duplicates it
   copyToClipboard: boolean;
@@ -89,7 +95,7 @@ type ExportProgress = { stage: "analyse" | "encode" | "copy" | "finish"; percent
 | `save_settings` | `{ settings: Settings }` | `Settings` | Changing `clipDirs` triggers a rescan and a `library-changed` event. |
 | `list_clips` | none | `Clip[]` | Newest first. The first call scans and probes (cached on disk afterwards, so it's fast). |
 | `set_favourite` | `{ clipId, fav }` | none | |
-| `save_edits` | `{ clipId, edits: { inT, outT, markers } }` | none | Debounce calls (≈400 ms). A new In point starts making the clip's new thumbnail (its first trimmed frame); `library-changed` follows when it's ready. |
+| `save_edits` | `{ clipId, edits: { inT, outT, markers, canvas, cropX, cropY, cropH } }` | none | Debounce calls (≈400 ms). A new In point starts making the clip's new thumbnail (its first trimmed frame); `library-changed` follows when it's ready. |
 | `get_waveform` | `{ clipId, track, points }` | `number[]` | `track` = audio index, `points` = how many peaks (0..1) to return, spread over the whole clip. Cached. ≈0.3–1 s the first time. |
 | `get_keyframes` | `{ clipId }` | `number[]` | Keyframe times in seconds, sorted. Read from the packet index with ffprobe (no decoding, ≈0.2 s for 200 MB; cached). The editor uses them to scrub fast: while a drag moves quickly it seeks to the nearest keyframe (≈10 ms to decode) and lands on the exact frame when the drag slows or stops. |
 | `prepare_audio` | `{ clipId }` | `{ index, name, path }[]` | Extracts each audio track to its own .m4a (stream copy, cached) so the editor can play every track at its own volume with `<audio>` elements kept in sync with a **muted** `<video>`. |
@@ -121,7 +127,7 @@ type ExportProgress = { stage: "analyse" | "encode" | "copy" | "finish"; percent
 - Target = limit × 0.95. `total kbps = target_MB × 8000 / dur`. Audio 128 kbps, or 96 kbps when video would drop below 1500 kbps.
 - Ladder (video kbps → tier): ≥6000 → 1080p60, ≥3500 → 1080p30, ≥2000 → 720p60, ≥1500 → 720p30, ≥1000 → 480p30 (Low), otherwise 480p30 (Poor).
 - The tier never upscales past the source resolution or fps.
-- `copy` mode: when the selection already fits under the limit at source bitrate and the canvas isn't 9:16 (or the preset is `orig`), video is stream-copied and audio is mixed and re-encoded as a single AAC 192 kbps track.
+- `copy` mode: when the selection already fits under the limit at source bitrate and the canvas is the original frame (or the preset is `orig`, which never crops), video is stream-copied and audio is mixed and re-encoded as a single AAC 192 kbps track.
 - `encode` mode: two-pass libx264, then all non-muted tracks are mixed (with volumes) into a single AAC track. Discord only plays the first audio track, so mixing is required.
 - After encoding, if the file is over the limit, the backend re-encodes once at a proportionally lower bitrate.
 
@@ -202,7 +208,7 @@ type Monitor = { index: number; name: string; width: number; height: number; pri
 |---|---|---|---|
 | `recorder_status` | none | `RecorderStatus` | |
 | `set_buffer` | `{ enabled }` | `RecorderStatus` | Turns the replay buffer on or off and persists it (same as the Alt+F9 hotkey). |
-| `save_replay` | `{ secs: number \| null }` | `{ path, game, duration }` | Saves the last `secs` seconds (null = bufferSecs), the same as the save hotkey. Rejects if the buffer is off or empty. |
+| `save_replay` | `{ secs: number | null }` | `{ path, game, duration }` | Saves the last `secs` seconds (null = bufferSecs), the same as the save hotkey. Rejects if the buffer is off or empty. The clip is written as `name.part.mp4` and renamed when done (the library ignores `.part` files); if another program holds it, the rename is retried for ~4 s, then it's copied, and a clip that still can't be finished gets its name the next time Backtrack starts. `game` is the game in front, or the one last in front while it's still running, else "Desktop capture". |\| null }` | `{ path, game, duration }` | Saves the last `secs` seconds (null = bufferSecs), the same as the save hotkey. Rejects if the buffer is off or empty. |
 | `toggle_mic_mute` | none | `RecorderStatus` | Mic track goes silent in recordings (doesn't affect Discord). |
 | `add_marker` | none | none | Marks "now"; the next saved clip that contains this moment gets a marker there (shows in `clip.edits.markers`). |
 | `list_audio_devices` | none | `AudioDevices` | |

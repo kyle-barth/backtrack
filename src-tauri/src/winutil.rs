@@ -4,8 +4,8 @@
 use crate::util;
 use std::os::windows::process::CommandExt;
 use std::path::Path;
-use std::sync::OnceLock;
-use windows_sys::Win32::Foundation::CloseHandle;
+use std::sync::{Mutex, OnceLock};
+use windows_sys::Win32::Foundation::{CloseHandle, WAIT_TIMEOUT};
 use windows_sys::Win32::Graphics::Gdi::{EnumDisplayDevicesW, DISPLAY_DEVICEW, DISPLAY_DEVICE_PRIMARY_DEVICE};
 use windows_sys::Win32::Media::Audio::{PlaySoundW, SND_ASYNC, SND_MEMORY, SND_NODEFAULT};
 use windows_sys::Win32::Storage::FileSystem::{GetFileVersionInfoSizeW, GetFileVersionInfoW, VerQueryValueW};
@@ -41,9 +41,11 @@ pub fn local_stamp() -> String {
     format!("{:04}-{:02}-{:02}__{:02}-{:02}-{:02}", t.wYear, t.wMonth, t.wDay, t.wHour, t.wMinute, t.wSecond)
 }
 
+#[derive(Clone)]
 struct Foreground {
     exe: String,
     title: String,
+    pid: u32,
 }
 
 fn foreground() -> Option<Foreground> {
@@ -57,17 +59,66 @@ fn foreground() -> Option<Foreground> {
         let mut tbuf = [0u16; 512];
         let tlen = GetWindowTextW(hwnd, tbuf.as_mut_ptr(), tbuf.len() as i32).max(0) as usize;
         let title = String::from_utf16_lossy(&tbuf[..tlen]);
-        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        Some(Foreground { exe: process_exe(pid).unwrap_or_default(), title, pid })
+    }
+}
+
+/// The full path of process `pid`'s program, while it's running.
+fn process_exe(pid: u32) -> Option<String> {
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE, 0, pid);
         if h.is_null() {
-            return Some(Foreground { exe: String::new(), title });
+            return None;
         }
+        // A process that has ended but whose handle someone still holds can still be opened.
+        let running = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
         let mut buf = [0u16; 1024];
         let mut len = buf.len() as u32;
         let ok = QueryFullProcessImageNameW(h, 0, buf.as_mut_ptr(), &mut len);
         CloseHandle(h);
-        let exe = if ok != 0 { String::from_utf16_lossy(&buf[..len as usize]) } else { String::new() };
-        Some(Foreground { exe, title })
+        (running && ok != 0).then(|| String::from_utf16_lossy(&buf[..len as usize]))
     }
+}
+
+/// Whether a window's program could be the game: anything but the apps listed in NOT_GAMES.
+fn could_be_game(fg: &Foreground) -> bool {
+    let stem = Path::new(&fg.exe).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
+    !stem.is_empty() && !NOT_GAMES.contains(&stem.as_str())
+}
+
+/// The game last seen in front, as it was then (see note_game).
+static LAST_GAME: Mutex<Option<Foreground>> = Mutex::new(None);
+
+/// Remember the game in front, if one is. Called every 2 s while recording (and at every save), so a clip saved
+/// while another window is in front, like Discord beside a windowed game, is still named after the game.
+pub fn note_game() {
+    if let Some(fg) = foreground().filter(could_be_game) {
+        *LAST_GAME.lock().unwrap() = Some(fg);
+    }
+}
+
+/// The game a clip saved now comes from: the one in front, else the game last seen in front while it's still
+/// running (behind another window, or minimized). Once that game has closed, none: the clip is a desktop capture.
+fn clip_game() -> Option<Foreground> {
+    pick_game(foreground(), &mut LAST_GAME.lock().unwrap(), still_open)
+}
+
+/// Whether the game seen earlier is still running: same process, same program (a process id is reused once its
+/// process ends).
+fn still_open(g: &Foreground) -> bool {
+    process_exe(g.pid).map_or(false, |exe| exe.eq_ignore_ascii_case(&g.exe))
+}
+
+/// clip_game's rule, given the window in front, the game last seen in front, and how to tell it's still open.
+fn pick_game(front: Option<Foreground>, last: &mut Option<Foreground>, open: impl Fn(&Foreground) -> bool) -> Option<Foreground> {
+    if let Some(fg) = front.filter(could_be_game) {
+        *last = Some(fg.clone());
+        return Some(fg);
+    }
+    if !last.as_ref().map_or(false, open) {
+        *last = None;
+    }
+    last.clone()
 }
 
 /// FileDescription (or ProductName) from an executable's version resource.
@@ -118,6 +169,9 @@ const NOT_GAMES: &[&str] = &[
     "steelseriesengine", "obs64", "claude", "windowsterminal", "powershell", "cmd", "taskmgr", "notepad", "slack",
     "teams", "ms-teams", "outlook", "searchhost", "shellexperiencehost", "startmenuexperiencehost", "applicationframehost",
     "lockapp", "textinputhost",
+    // Stream decks, overlays, launchers and peripheral apps: in front for a moment, never what's being played.
+    "streamdeck", "nvidia overlay", "nvidia app", "eadesktop", "ubisoftconnect", "upc", "galaxyclient", "riotclientux",
+    "riotclientservices", "medal", "overwolf", "lghub", "icue",
 ];
 
 /// Executable stems whose descriptions don't match how players name the game.
@@ -144,16 +198,18 @@ const KNOWN: &[(&str, &str)] = &[
     ("gta5", "Grand Theft Auto V"),
     ("eldenring", "ELDEN RING"),
     ("cyberpunk2077", "Cyberpunk 2077"),
+    ("fc24", "EA SPORTS FC 24"),
+    ("fc25", "EA SPORTS FC 25"),
+    ("fc26", "EA SPORTS FC 26"),
+    ("fc27", "EA SPORTS FC 27"),
 ];
 
-/// Name for a clip saved right now: the foreground game, matched to a game already in the library when
-/// possible so new clips group with GG's; "Desktop capture" when no game is in front.
+/// Name for a clip saved right now: the game in front, or the one last in front while it's still running (see
+/// clip_game), matched to a game already in the library when possible so new clips group with GG's; "Desktop
+/// capture" when there's no game.
 pub fn current_game(library_games: &[String]) -> String {
-    let Some(fg) = foreground() else { return "Desktop capture".into() };
+    let Some(fg) = clip_game() else { return "Desktop capture".into() };
     let stem = Path::new(&fg.exe).file_stem().map(|s| s.to_string_lossy().to_lowercase()).unwrap_or_default();
-    if stem.is_empty() || NOT_GAMES.contains(&stem.as_str()) {
-        return "Desktop capture".into();
-    }
     // Candidates, best first.
     let mut cands: Vec<String> = Vec::new();
     if let Some((_, n)) = KNOWN.iter().find(|(s, _)| *s == stem) {
@@ -338,5 +394,52 @@ pub fn set_start_with_windows(on: bool) -> Result<(), String> {
         Ok(())
     } else {
         Err(String::from_utf8_lossy(&out.stderr).trim().to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn win(exe: &str, pid: u32) -> Foreground {
+        Foreground { exe: exe.into(), title: String::new(), pid }
+    }
+
+    /// A player has FC in a window beside Discord. A clip saved with Discord in front is still FC's while FC runs; once
+    /// FC is closed it's a desktop capture, never named after a game that isn't open.
+    #[test]
+    fn a_clip_is_named_after_a_game_only_while_it_is_open() {
+        let fc = win(r"C:\Games\FC 27\FC27.exe", 4242);
+        let discord = win(r"C:\Users\x\AppData\Local\Discord\app-1.0\Discord.exe", 17);
+        let mut last = None;
+        let open = |_: &Foreground| true;
+        let closed = |_: &Foreground| false;
+
+        assert_eq!(pick_game(Some(fc.clone()), &mut last, open).map(|g| g.pid), Some(4242), "in front");
+        assert_eq!(pick_game(Some(discord.clone()), &mut last, open).map(|g| g.pid), Some(4242), "behind Discord");
+        assert_eq!(pick_game(None, &mut last, open).map(|g| g.pid), Some(4242), "minimized, nothing in front");
+        let deck = win(r"C:\Program Files\Elgato\StreamDeck\StreamDeck.exe", 9);
+        assert_eq!(pick_game(Some(deck), &mut last, open).map(|g| g.pid), Some(4242), "a Stream Deck isn't a game");
+
+        assert!(pick_game(Some(discord.clone()), &mut last, closed).is_none(), "FC closed: a desktop capture");
+        assert!(last.is_none(), "and forgotten");
+        assert!(pick_game(Some(discord), &mut last, open).is_none(), "even if its process id comes back");
+    }
+
+    /// still_open's check: a process that has ended doesn't count, even while a handle to it is still held.
+    #[test]
+    fn an_ended_process_is_not_open() {
+        let mut child = std::process::Command::new("cmd")
+            .args(["/c", "ping -n 30 127.0.0.1 >nul"])
+            .creation_flags(0x0800_0000)
+            .spawn()
+            .unwrap();
+        let exe = process_exe(child.id()).expect("running");
+        assert!(exe.to_lowercase().ends_with("cmd.exe"), "{exe}");
+        assert!(still_open(&win(&exe, child.id())));
+        child.kill().unwrap();
+        child.wait().unwrap();
+        assert!(process_exe(child.id()).is_none());
+        assert!(!still_open(&win(&exe, child.id())));
     }
 }

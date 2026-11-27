@@ -170,22 +170,29 @@ fn on_change_fn(app: &AppHandle) -> Arc<dyn Fn() + Send + Sync> {
 
 /// Pushes status to the UI twice a second while the buffer runs and the page can be seen (live meters), and keeps
 /// the "which game would a clip be named after" guess, shown in the UI, fresh. In the tray (most of the time, behind
-/// a game) it does nothing: changes of state still reach the page and tray through on_change, and the page gets a
-/// fresh status as soon as it's shown (page_visible). Saving works out the game itself.
+/// a game) it only notes which game is in front every 2 s, so a clip saved with another window in front is still
+/// named after a game that's running (winutil::clip_game). Changes of state still reach the page and tray through
+/// on_change, and the page gets a fresh status as soon as it's shown (page_visible).
 pub fn status_pump(app: AppHandle) {
     std::thread::spawn(move || {
         let mut tick = 0u64;
         loop {
             std::thread::sleep(Duration::from_millis(500));
             let st = app.state::<Arc<AppState>>();
-            if !st.recorder.is_running() || !PAGE_VISIBLE.load(Ordering::SeqCst) {
+            if !st.recorder.is_running() {
                 continue;
             }
-            if tick % 4 == 0 {
+            tick += 1;
+            if !PAGE_VISIBLE.load(Ordering::SeqCst) {
+                if tick % 4 == 0 {
+                    winutil::note_game();
+                }
+                continue;
+            }
+            if tick % 4 == 1 {
                 let game = winutil::current_game(&st.lib.game_names());
                 *st.recorder.game.lock().unwrap() = Some(game);
             }
-            tick += 1;
             emit_status(&app);
         }
     });

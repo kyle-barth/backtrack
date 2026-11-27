@@ -164,16 +164,20 @@ function resample(src, points){
 /* the backend's export maths (API.md "Export maths"), mirrored so results look real */
 const LADDER = [{k:6000,res:1080,fps:60},{k:3500,res:1080,fps:30},{k:2000,res:720,fps:60},{k:1500,res:720,fps:30},{k:1000,res:480,fps:30},{k:0,res:480,fps:30}];
 const even = n => Math.max(2, Math.round(n/2)*2);
+const unit = (v, d) => isFinite(v) && v !== null ? Math.min(1, Math.max(0, +v)) : d;
 function planExport(req, clip){
   const dur = req.end - req.start, vert = req.canvas === '9:16', limit = req.limitMb;
+  const wide = req.canvas === '16:9' && clip.width/clip.height > 16/9 + .03;   // a 16:9 crop of an ultrawide clip
   const copyMB = (clip.videoKbps + 192)*dur/8000;
-  if (req.preset === 'orig' || (limit && copyMB <= limit*.95 && !vert)){
+  if (req.preset === 'orig' || (limit && copyMB <= limit*.95 && !vert && !wide)){
     return {mode:'copy', dur, width:clip.width, height:clip.height, fps:Math.round(clip.fps), vk:clip.videoKbps, ak:192, mb:copyMB*.995, secs:Math.max(1, dur/40)};
   }
   const target = limit*.95; let ak = 128, vk = target*8000/dur - ak; if (vk < 1500){ ak = 96; vk = target*8000/dur - ak; }
   vk = Math.min(vk, 20000);
-  const L = LADDER.find(l => vk >= l.k), h = Math.min(L.res, clip.height), fps = Math.min(L.fps, Math.round(clip.fps));
-  const width = vert ? even(h*9/16) : even(h*clip.width/clip.height), height = h;
+  // a crop is never exported taller than the part it keeps
+  const srcH = vert || wide ? even(clip.height*Math.min(1, Math.max(.3, isFinite(req.cropH) ? +req.cropH : 1))) : clip.height;
+  const L = LADDER.find(l => vk >= l.k), h = Math.min(L.res, srcH), fps = Math.min(L.fps, Math.round(clip.fps));
+  const width = vert ? even(h*9/16) : wide ? even(h*16/9) : even(h*clip.width/clip.height), height = h;
   return {mode:'encode', dur, width, height, fps, vk:Math.round(vk), ak, mb:(vk + ak)*dur/8000*.995, secs:Math.max(3, dur*.45)};
 }
 
@@ -182,6 +186,7 @@ function create(){
   const flags = parseFlags();
   const qp = k => (location.search + '&' + location.hash.replace('#', '&')).match(new RegExp('[?&]' + k + '=(\\d+)'));
   const mixedDrive = !!qp('mixed') || flags.has('mixed');   // ?mixed=1: PEAK lives on D:, which has no Recycle Bin
+  const ultrawide = flags.has('ultrawide');   // ?ultrawide: every clip is 3440×1440, an ultrawide monitor's (pair it with 21:9 thumbnails)
   const checkMs = qp('checkms') ? +qp('checkms')[1] : 40;     // ?checkms=1500: a slow trash_check (a sleeping HDD, a network share)
   const listeners = {};
   const emit = (ev, payload) => (listeners[ev] || []).slice().forEach(fn => { try { fn(payload); } catch (e) { setTimeout(() => { throw e; }); } });
@@ -235,7 +240,7 @@ function create(){
     const sizeBytes = Math.round(mb*1e6);
     const c = {
       id, path, fileName, game:g.name, gameId:g.id, recordedAt:at, duration:dur, sizeBytes,
-      width:1920, height:1080, fps:60, videoKbps:Math.round(mb*8000/dur) - tracks.length*160,
+      width:ultrawide ? 3440 : 1920, height:ultrawide ? 1440 : 1080, fps:60, videoKbps:Math.round(mb*8000/dur) - tracks.length*160,
       audioTracks:clone(tracks), thumb:thumbKey ? `${THUMBS}${thumbKey}.jpg` : null,
       fav:!!f.fav, edits:f.edits ? clone(f.edits) : null, exports:[], source:'gg',
     };
@@ -453,7 +458,9 @@ function create(){
       const c = need(clipId);
       if (!(edits && edits.outT > edits.inT)) throw 'Invalid edits: Out must be after In.';
       const was = c.edits ? c.edits.inT : 0;
-      c.edits = {inT:+edits.inT, outT:+edits.outT, markers:(edits.markers || []).map(Number).sort((a, b) => a - b)};
+      c.edits = {inT:+edits.inT, outT:+edits.outT, markers:(edits.markers || []).map(Number).sort((a, b) => a - b),
+        canvas:['16:9', '9:16'].includes(edits.canvas) ? edits.canvas : 'original', cropX:unit(edits.cropX, .5), cropY:unit(edits.cropY, .5),
+        cropH:isFinite(edits.cropH) ? Math.min(1, Math.max(.3, +edits.cropH)) : 1};
       // A new In point: like the app, the thumbnail becomes the first trimmed frame, made in the background. With no
       // video here it's the same picture under the new name the app would give it.
       if (c.edits.inT !== was && c.thumb){

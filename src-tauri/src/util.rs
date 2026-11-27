@@ -135,6 +135,14 @@ pub fn sanitize_stem(s: &str) -> String {
     }
 }
 
+/// A file still being written, which gets its real name when it's done: `name.part.mp4` (a clip being saved, an
+/// export). Never a clip of its own.
+pub fn is_partial(path: &Path) -> bool {
+    path.file_stem()
+        .and_then(|s| Path::new(s).extension())
+        .map_or(false, |e| e.eq_ignore_ascii_case("part"))
+}
+
 /// `dir/stem.ext`, or `dir/stem (2).ext`, `(3)`... if taken.
 pub fn unique_path(dir: &Path, stem: &str, ext: &str) -> PathBuf {
     let first = dir.join(format!("{stem}.{ext}"));

@@ -36,6 +36,10 @@ pub struct ExportRequest {
     pub canvas: String,
     #[serde(default = "half")]
     pub crop_x: f64,
+    #[serde(default = "half")]
+    pub crop_y: f64,
+    #[serde(default = "whole")]
+    pub crop_h: f64,
     #[serde(default)]
     pub tracks: Vec<TrackMix>,
     #[serde(default)]
@@ -44,10 +48,32 @@ pub struct ExportRequest {
     pub copy_to_clipboard: bool,
 }
 fn default_canvas() -> String {
-    "16:9".into()
+    "original".into()
 }
 fn half() -> f64 {
     0.5
+}
+fn whole() -> f64 {
+    1.0
+}
+
+/// A crop's size and place: `h` is how much of the clip's height it keeps (1 = all of it; smaller frames a game in
+/// a window), `x` and `y` where it sits in the room left over, across and down (0..1). Its shape is the Frame's.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Crop {
+    pub x: f64,
+    pub y: f64,
+    pub h: f64,
+}
+
+/// The smallest crop, as a share of the clip's height (the editor's limit too).
+pub const MIN_CROP_H: f64 = 0.3;
+
+impl Crop {
+    pub fn new(x: f64, y: f64, h: f64) -> Crop {
+        let unit = |v: f64, d: f64| if v.is_finite() { v.clamp(0.0, 1.0) } else { d };
+        Crop { x: unit(x, 0.5), y: unit(y, 0.5), h: if h.is_finite() { h.clamp(MIN_CROP_H, 1.0) } else { 1.0 } }
+    }
 }
 
 #[derive(Serialize, Clone, Debug)]
@@ -123,11 +149,41 @@ fn even(x: f64) -> u32 {
     ((x / 2.0).round() as u32).max(1) * 2
 }
 
-pub fn plan(clip: &Clip, dur: f64, preset: &str, limit_mb: Option<f64>, vertical: bool) -> Plan {
+/// The part of the clip an export keeps: the editor's Canvas.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Frame {
+    /// The whole frame, in its own shape.
+    Original,
+    /// A 16:9 crop of a wider clip (an ultrawide one), `crop_x` across.
+    Wide,
+    /// A 9:16 crop for phones, `crop_x` across.
+    Vertical,
+}
+
+impl Frame {
+    /// The frame `canvas` asks for: "9:16", "16:9" (only for a clip wider than that; any other is 16:9 already, or
+    /// narrower) or the original ("original", and "16:9" from versions before 0.4.9, where it meant the original).
+    pub fn of(canvas: &str, clip: &Clip) -> Frame {
+        match canvas {
+            "9:16" => Frame::Vertical,
+            "16:9" if wider_than_16_9(clip.width, clip.height) => Frame::Wide,
+            _ => Frame::Original,
+        }
+    }
+}
+
+/// Wider than 16:9 by more than rounding: 2560×1080, 3440×1440, 5120×1440. The UI's isWide is the same test.
+pub fn wider_than_16_9(w: u32, h: u32) -> bool {
+    h > 0 && w as f64 / h as f64 > 16.0 / 9.0 + 0.03
+}
+
+/// `crop_h`: how much of the clip's height a crop keeps (Crop::h); the export is never taller than that.
+pub fn plan(clip: &Clip, dur: f64, preset: &str, limit_mb: Option<f64>, frame: Frame, crop_h: f64) -> Plan {
     let src_fps = clip.fps.round().max(1.0) as u32;
+    let src_h = if frame == Frame::Original { clip.height } else { even(clip.height as f64 * crop_h.clamp(MIN_CROP_H, 1.0)) };
     let sel_mb = clip.size_bytes as f64 / 1e6 / clip.duration.max(0.1) * dur;
     let limit = if preset == "orig" { None } else { limit_mb.filter(|l| *l > 0.0).or(Some(10.0)) };
-    if preset == "orig" || (limit.map_or(false, |l| sel_mb <= l * 0.95) && !vertical) {
+    if preset == "orig" || (limit.map_or(false, |l| sel_mb <= l * 0.95) && frame == Frame::Original) {
         return Plan {
             mode: Mode::Copy,
             width: clip.width,
@@ -151,9 +207,12 @@ pub fn plan(clip: &Clip, dur: f64, preset: &str, limit_mb: Option<f64>, vertical
     vk = vk.min(20_000.0).max(150.0);
     let (_, res, tier_fps) = LADDER.iter().find(|(k, _, _)| vk >= *k).copied().unwrap_or((0.0, 480, 30));
     let fps = tier_fps.min(src_fps);
-    let (width, height) = if vertical {
-        let w = res.min(clip.height.max(2));
+    let (width, height) = if frame == Frame::Vertical {
+        let w = res.min(src_h.max(2));
         (even(w as f64), even(w as f64 * 16.0 / 9.0))
+    } else if frame == Frame::Wide {
+        let h = res.min(src_h.max(2));
+        (even(h as f64 * 16.0 / 9.0), even(h as f64))
     } else {
         let h = res.min(clip.height.max(2));
         (even(clip.width as f64 * h as f64 / clip.height.max(1) as f64), even(h as f64))
@@ -200,12 +259,20 @@ fn audio_graph(clip: &Clip, tracks: &[TrackMix]) -> Option<String> {
     Some(g)
 }
 
-fn video_chain(clip: &Clip, plan: &Plan, vertical: bool, crop_x: f64) -> String {
+fn video_chain(clip: &Clip, plan: &Plan, frame: Frame, crop: Crop) -> String {
     let mut f = Vec::new();
-    if vertical {
-        f.push(format!("crop=w=trunc(ih*9/16/2)*2:h=ih:x=(iw-ow)*{:.4}:y=0", crop_x.clamp(0.0, 1.0)));
+    // A crop keeps `h` of the height, in the Frame's shape, `x` across and `y` down the room it leaves. The editor's
+    // crop window and the thumbnails (thumbHTML) place it the same way.
+    let ratio = match frame {
+        Frame::Vertical => Some("9/16"),
+        Frame::Wide => Some("16/9"),
+        Frame::Original => None,
+    };
+    if let Some(r) = ratio {
+        let Crop { x, y, h } = Crop::new(crop.x, crop.y, crop.h);
+        f.push(format!("crop=w=trunc(ih*{h:.4}*{r}/2)*2:h=trunc(ih*{h:.4}/2)*2:x=(iw-ow)*{x:.4}:y=(ih-oh)*{y:.4}"));
     }
-    if vertical || plan.width != clip.width || plan.height != clip.height {
+    if frame != Frame::Original || plan.width != clip.width || plan.height != clip.height {
         f.push(format!("scale={}:{}:flags=lanczos", plan.width, plan.height));
     }
     if (plan.fps as f64) < clip.fps.round() {
@@ -307,8 +374,9 @@ pub fn export(ctx: &ExportCtx, req: &ExportRequest, mut progress: impl FnMut(Pro
     if dur < 0.2 {
         return Err("The selection is too short to export.".into());
     }
-    let vertical = req.canvas == "9:16";
-    let plan = plan(clip, dur, &req.preset, req.limit_mb, vertical);
+    let frame = Frame::of(&req.canvas, clip);
+    let crop = Crop::new(req.crop_x, req.crop_y, req.crop_h);
+    let plan = plan(clip, dur, &req.preset, req.limit_mb, frame, crop.h);
     std::fs::create_dir_all(&ctx.out_dir).map_err(|e| format!("Couldn't create the export folder: {e}"))?;
 
     let default_stem = format!("{}_discord", Path::new(&clip.file_name).file_stem().unwrap_or_default().to_string_lossy());
@@ -345,7 +413,7 @@ pub fn export(ctx: &ExportCtx, req: &ExportRequest, mut progress: impl FnMut(Pro
                 let passlog = util::cache_sub("passlog").join(format!("job{}", util::now_ms()));
                 let passlog_s = passlog.to_string_lossy().into_owned();
                 let _logs = PassLogs(passlog_s.clone());
-                let vchain = video_chain(clip, &plan, vertical, req.crop_x);
+                let vchain = video_chain(clip, &plan, frame, crop);
                 let x264 = |vk: f64| {
                     vec![
                         s("-c:v"), s("libx264"), s("-preset"), s("medium"), s("-profile:v"), s("high"),
@@ -463,20 +531,63 @@ mod tests {
     #[test]
     fn ladder_matches_the_ui() {
         let c = rl_clip();
-        let p = plan(&c, 24.0, "d10", Some(10.0), false);
+        let p = plan(&c, 24.0, "d10", Some(10.0), Frame::Original, 1.0);
         assert_eq!(p.mode, Mode::Encode);
         assert_eq!((p.width, p.height, p.fps), (1280, 720, 60)); // 24 s → ≈3.0 Mbps → 720p60
-        let p = plan(&c, 58.0, "d10", Some(10.0), false);
+        let p = plan(&c, 58.0, "d10", Some(10.0), Frame::Original, 1.0);
         assert_eq!((p.width, p.height, p.fps), (854, 480, 30)); // 58 s → ≈1.2 Mbps → 480p30
         assert_eq!(p.audio_kbps, 96.0);
-        let p = plan(&c, 10.0, "d10", Some(10.0), false);
+        let p = plan(&c, 10.0, "d10", Some(10.0), Frame::Original, 1.0);
         assert_eq!((p.width, p.height, p.fps), (1920, 1080, 60));
-        let p = plan(&c, 24.0, "d10", Some(10.0), true);
+        let p = plan(&c, 24.0, "d10", Some(10.0), Frame::Vertical, 1.0);
         assert_eq!((p.width, p.height), (720, 1280));
-        let p = plan(&c, 2.0, "d10", Some(10.0), false);
+        let p = plan(&c, 2.0, "d10", Some(10.0), Frame::Original, 1.0);
         assert_eq!(p.mode, Mode::Copy);
-        let p = plan(&c, 24.0, "orig", None, false);
+        let p = plan(&c, 24.0, "orig", None, Frame::Original, 1.0);
         assert_eq!(p.mode, Mode::Copy);
+    }
+
+    /// An ultrawide clip (3440×1440) exports whole in its own 21:9 shape, or as a 16:9 crop placed over the
+    /// game (here a quarter of the way across), which is never a plain copy. A 16:9 clip has nothing to crop.
+    #[test]
+    fn ultrawide_clips_export_whole_or_as_a_16_9_crop() {
+        let uw = Clip { width: 3440, height: 1440, ..rl_clip() };
+        assert_eq!(Frame::of("16:9", &uw), Frame::Wide);
+        assert_eq!(Frame::of("original", &uw), Frame::Original);
+        assert_eq!(Frame::of("9:16", &uw), Frame::Vertical);
+        assert_eq!(Frame::of("16:9", &rl_clip()), Frame::Original, "a 16:9 clip is 16:9 already");
+        assert_eq!(Frame::of("16:9", &Clip { width: 2560, height: 1080, ..rl_clip() }), Frame::Wide);
+
+        let p = plan(&uw, 24.0, "d10", Some(10.0), Frame::Original, 1.0);
+        assert_eq!((p.width, p.height), (1720, 720));
+        let p = plan(&uw, 24.0, "d10", Some(10.0), Frame::Wide, 1.0);
+        assert_eq!((p.width, p.height, p.mode), (1280, 720, Mode::Encode));
+        let p = plan(&uw, 2.0, "d10", Some(10.0), Frame::Wide, 1.0);
+        assert_eq!(p.mode, Mode::Encode, "small enough to copy, but a crop has to be encoded");
+        let chain = video_chain(&uw, &p, Frame::Wide, Crop::new(0.25, 0.5, 1.0));
+        assert!(
+            chain.starts_with("[0:v:0]crop=w=trunc(ih*1.0000*16/9/2)*2:h=trunc(ih*1.0000/2)*2:x=(iw-ow)*0.2500:y=(ih-oh)*0.5000,scale="),
+            "{chain}"
+        );
+        let chain = video_chain(&uw, &plan(&uw, 24.0, "d10", Some(10.0), Frame::Original, 1.0), Frame::Original, Crop::new(0.25, 0.5, 1.0));
+        assert!(!chain.contains("crop"), "{chain}");
+    }
+
+    /// A game in a window on half an ultrawide screen (1720 of 3440 px) is framed by a smaller crop, which can sit
+    /// anywhere. The export is never taller than the part it keeps (no upscaling), and a crop never gets smaller
+    /// than 30% of the height or outside the frame.
+    #[test]
+    fn a_smaller_crop_frames_a_game_in_a_window() {
+        let uw = Clip { width: 3440, height: 1440, ..rl_clip() };
+        // 1720 px wide at 16:9 is 967.5 px tall: 0.672 of 1440
+        let p = plan(&uw, 10.0, "d10", Some(10.0), Frame::Wide, 0.672);
+        assert_eq!((p.width, p.height), (1720, 968), "1080p tier, but only 968 px tall to keep");
+        let p = plan(&uw, 24.0, "d10", Some(10.0), Frame::Wide, 0.672);
+        assert_eq!((p.width, p.height), (1280, 720));
+        let chain = video_chain(&uw, &p, Frame::Wide, Crop::new(0.0, 0.5, 0.672));
+        assert!(chain.contains("crop=w=trunc(ih*0.6720*16/9/2)*2:h=trunc(ih*0.6720/2)*2:x=(iw-ow)*0.0000:y=(ih-oh)*0.5000"), "{chain}");
+        assert_eq!(Crop::new(-1.0, 7.0, 0.05), Crop { x: 0.0, y: 1.0, h: MIN_CROP_H });
+        assert_eq!(Crop::new(f64::NAN, 0.2, f64::NAN), Crop { x: 0.5, y: 0.2, h: 1.0 });
     }
 
     #[test]

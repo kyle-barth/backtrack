@@ -89,10 +89,37 @@ function shortPath(p,max=34){p=String(p||'');if(p.length<=max)return p;const par
 
 /* ================================================================== IMAGES */
 const initial=n=>(String(n||'?').match(/[A-Za-z0-9]/)||['?'])[0];
+/* The Canvas a clip exports with, saved in its edits: 'original', '16:9' (a crop of a clip wider than that, like an
+   ultrawide one) or '9:16' (vertical). isWide is export.rs's wider_than_16_9. */
+const isWide=c=>!!c&&c.height>0&&c.width/c.height>16/9+.03;
+function canvasOf(c){const k=c&&c.edits&&c.edits.canvas;return k==='9:16'?'9:16':k==='16:9'&&isWide(c)?'16:9':'original';}
+/* A crop (edits.cropX/cropY/cropH, as export.rs's Crop): cropH is how much of the height it keeps (smaller frames a
+   game in a window), cropX / cropY where it sits in the room left over, across and down. */
+const MIN_CROP_H=.3;
+const unit=(v,d)=>typeof v==='number'&&isFinite(v)?clamp(v,0,1):d;
+const cropOf=c=>{const e=c&&c.edits||{};return {x:unit(e.cropX,.5),y:unit(e.cropY,.5),h:typeof e.cropH==='number'&&isFinite(e.cropH)?clamp(e.cropH,MIN_CROP_H,1):1};};
+/* The crop's size as shares of the frame's width and height (the shape is the canvas's; never wider than the clip). */
+function cropFrac(c,cv,h){
+  const ar=c&&c.height?c.width/c.height:16/9,r=cv==='9:16'?9/16:16/9;
+  let chF=h,cwF=chF*r/ar;if(cwF>1){cwF=1;chF=ar/r;}
+  return {cwF,chF};
+}
+/* A thumbnail, in a 16:9 box, framed like the clip's export (o.clip; o.canvas / o.crop for one export): a clip that
+   isn't 16:9 shows whole with black bars; a crop shows just the part it keeps (a vertical one in a 9:16 window with
+   bars), placed and sized the way export.rs crops it. */
 function thumbHTML(path,o={}){
   const u=path?BT.src(path):'';
-  return u?`<img class="tim" src="${esc(u)}" alt=""${o.eager?'':' loading="lazy"'} draggable="false">`:`<span class="ph-thumb">${ic('film')}</span>`;
+  if(!u)return `<span class="ph-thumb">${ic('film')}</span>`;
+  const c=o.clip,cv=o.canvas||canvasOf(c);
+  const img=(cls,style)=>`<img class="tim${cls}" src="${esc(u)}" alt=""${style?` style="${style}"`:''}${o.eager?'':' loading="lazy"'} draggable="false">`;
+  if(cv==='9:16'||(cv==='16:9'&&isWide(c))){
+    const k=o.crop||cropOf(c),{cwF,chF}=cropFrac(c,cv,k.h),x0=k.x*(1-cwF),y0=k.y*(1-chF),p=n=>(n*100).toFixed(2)+'%';
+    return `<span class="tfr"><span class="tcrop${cv==='16:9'?' w':''}">${img('',`width:${p(1/cwF)};height:${p(1/chF)};left:${p(-x0/cwF)};top:${p(-y0/chF)}`)}</span></span>`;
+  }
+  return img(c&&c.height&&Math.abs(c.width/c.height-16/9)>.03?' fit':'');
 }
+/* "· 16:9 crop" / "· 9:16" after a card's details, so a cropped clip reads differently from a 16:9 one */
+const frameTag=c=>{const cv=canvasOf(c);return cv==='16:9'?' · 16:9 crop':cv==='9:16'?' · 9:16':'';};
 function gameIcon(g,cls=''){
   const u=g&&g.thumb?BT.src(g.thumb):'';
   return u?`<img class="gim ${cls}" src="${esc(u)}" alt="" data-ini="${esc(initial(g.name))}" draggable="false">`:`<span class="gi-ph ${cls}">${esc(initial(g&&g.name))}</span>`;
@@ -258,9 +285,9 @@ function durHTML(c,style=''){
 function cardHTML(c,opt={}){
   const fresh=isNewClip(c),d=new Date(c.recordedAt);
   const title=opt.showGame?c.game:whenLabel(d);
-  const meta=opt.showGame?`${whenLabel(d)} · ${fmtMB(MBof(c.sizeBytes))}`:`${fmtMB(MBof(c.sizeBytes))} · ${c.height}p${fpsR(c)}`;
+  const meta=(opt.showGame?`${whenLabel(d)} · ${fmtMB(MBof(c.sizeBytes))}`:`${fmtMB(MBof(c.sizeBytes))} · ${c.height}p${fpsR(c)}`)+frameTag(c);
   return `<article class="card${fresh?' new':''}${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}" tabindex="0" aria-label="${esc(cardLbl(c))}">
-    <div class="thumb">${thumbHTML(c.thumb)}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}
+    <div class="thumb">${thumbHTML(c.thumb,{clip:c})}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}
       <div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}
       <button class="quick" data-quick="${esc(c.id)}" data-tip="Export for Discord" aria-label="Export for Discord">${ic('upload','sm')}</button></div>
     <div class="card-body"><div class="card-text"><div class="card-title" title="${esc(title)}">${esc(title)}</div><div class="card-meta">${meta}</div></div>
@@ -274,7 +301,7 @@ function refreshClipUI(c){
 }
 function moreTile(g,shown){
   const left=g.count-shown,c=g.clips[shown]||g.clips[0];
-  return `<article class="card more-tile" data-more="${esc(g.id)}" tabindex="0"><div class="thumb">${thumbHTML(c.thumb)}<div class="more-in"><b>+${left}</b><span>more ${esc(g.name)} clips</span><em class="more-sel"></em></div></div>
+  return `<article class="card more-tile" data-more="${esc(g.id)}" tabindex="0"><div class="thumb">${thumbHTML(c.thumb,{clip:c})}<div class="more-in"><b>+${left}</b><span>more ${esc(g.name)} clips</span><em class="more-sel"></em></div></div>
     <div class="card-body"><div class="card-text"><div class="card-title">View all ${g.count}</div><div class="card-meta">${fmtTotal(g.bytes)} in total</div></div></div></article>`;
 }
 /* Quick send exports a planned part of the clip (UX review r2 #3): inside the saved In/Out if the clip was trimmed,
@@ -287,11 +314,11 @@ function quickPlan(c){
 function heroHTML(){
   const c=S.clips[0];if(!c)return '';
   const fresh=isNewClip(c),d=new Date(c.recordedAt),n=c.audioTracks.length;
-  const qp=quickPlan(c),qe=estimate(S.settings.defaultPreset,{clip:c,dur:qp.len,vert:false});
+  const qp=quickPlan(c),qe=estimate(S.settings.defaultPreset,{clip:c,dur:qp.len,canvas:canvasOf(c)});
   const range=`${fmtLen(qp.inT)}–${fmtLen(qp.outT)}`;
   const sess=S.clips.slice(1,3);
   return `<section class="hero">
-    <div class="hero-thumb${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true})}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}<div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}</div>
+    <div class="hero-thumb${sel.ids.has(c.id)?' is-sel':''}" data-clip="${esc(c.id)}">${thumbHTML(c.thumb,{eager:true,clip:c})}${fresh?'<span class="badge-new">New</span>':''}${durHTML(c)}<div class="thumb-hover"><span class="play-c">${ic('play')}</span></div>${selCk(c)}</div>
     <div class="hero-info">
       <div class="eyebrow" id="heroEyebrow" data-ts="${c.recordedAt}" data-fresh="${fresh?1:0}"><span class="dot"></span>${fresh?'Just saved':'Newest clip'} · ${ago(c.recordedAt)}</div>
       <h2>${esc(c.game)} — ${whenLabel(d)}</h2>
@@ -300,7 +327,7 @@ function heroHTML(){
     </div>
     <div class="hero-session">${sess.length?`<div class="cap" style="color:var(--text-3)">Recent</div>`+sess.map(s=>{
       const sub=[s.gameId!==c.gameId?esc(s.game):'',fmtMB(MBof(s.sizeBytes)),isShared(s)?'shared':''].filter(Boolean).join(' · ');
-      return `<div class="mini${sel.ids.has(s.id)?' is-sel':''}" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true})}${durHTML(s,'right:4px;bottom:4px;font-size:10.5px;padding:2px 4px')}</div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
+      return `<div class="mini${sel.ids.has(s.id)?' is-sel':''}" data-clip="${esc(s.id)}"><div class="mt">${thumbHTML(s.thumb,{eager:true,clip:s})}${durHTML(s,'right:4px;bottom:4px;font-size:10.5px;padding:2px 4px')}</div><div style="min-width:0"><b>${whenLabel(new Date(s.recordedAt))}</b><span>${sub}</span></div></div>`;}).join(''):''}
     </div></section>`;
 }
 function ffBanner(){
@@ -842,7 +869,7 @@ async function trashSelected(){
       return;
     }
     const done=moved.length+deleted.length,verb=deleted.length&&!moved.length?'Deleted':'Moved';
-    const rows=failed.map(f=>`<div class="cf-fail"><div class="mt">${thumbHTML(f.c.thumb)}</div><div><b>${esc(clipLbl(f.c))}</b><span>${esc(f.why)}</span></div></div>`).join('');
+    const rows=failed.map(f=>`<div class="cf-fail"><div class="mt">${thumbHTML(f.c.thumb,{clip:f.c})}</div><div><b>${esc(clipLbl(f.c))}</b><span>${esc(f.why)}</span></div></div>`).join('');
     const again=await confirmBox({icon:'alert',tone:'warn',okCls:'',ok:'Try again',no:'Done',keep:true,
       title:done?`${verb} ${done} of ${done+failed.length} clips${verb==='Moved'?' to the Recycle Bin':''}`:failed.length===1?'Couldn’t move this clip':`Couldn’t move ${failed.length} clips`,
       sub:done?`${nClips(failed.length)} couldn’t be ${verb==='Moved'?'moved':'deleted'}`:'Nothing was moved',
@@ -877,7 +904,7 @@ async function restoreMoved(mv){
 const MIN_SEL=1;
 /* film: the thumbnail the preview poster and filmstrip use, picked when the clip opens. A trimmed clip's thumbnail
    is its first trimmed frame, so it changes as you trim; the editor keeps the one it opened with. */
-const ed={clip:null,dur:1,inT:0,outT:1,t:0,playing:false,loop:true,snap:true,zoom:1,canvas:'16:9',cropX:.5,preset:'d10',customMB:25,speed:1,tracks:[],markers:[],audio:[],gen:0,film:''};
+const ed={clip:null,dur:1,inT:0,outT:1,t:0,playing:false,loop:true,snap:true,zoom:1,canvas:'original',cropX:.5,cropY:.5,cropH:1,preset:'d10',customMB:25,speed:1,tracks:[],markers:[],audio:[],gen:0,film:''};
 const mixMem=new Map();   // per-clip volumes / mutes / canvas for this session (the contract has nowhere to save them)
 const tl={W:0,pps:1};
 const els={scroll:$('#tlScroll'),inner:$('#tlInner'),ruler:$('#ruler'),lanes:$('#lanes'),laneV:$('#laneV'),sel:$('#sel'),hIn:$('#hIn'),hOut:$('#hOut'),maskL:$('#maskL'),maskR:$('#maskR'),ph:$('#ph'),selLabel:$('#selLabel'),rulerSel:$('#rulerSel')};
@@ -900,7 +927,7 @@ function trackState(c,mem){
 }
 const trackById=id=>ed.tracks.find(x=>x.id===id);
 const laneOf=t=>$(`.lane-a[data-track="${t.id}"]`);
-function rememberMix(){if(ed.clip)mixMem.set(ed.clip.id,{tracks:ed.tracks.map(t=>({index:t.index,vol:t.vol,muted:t.muted})),canvas:ed.canvas,cropX:ed.cropX});}
+function rememberMix(){if(ed.clip)mixMem.set(ed.clip.id,{tracks:ed.tracks.map(t=>({index:t.index,vol:t.vol,muted:t.muted}))});}
 function buildTracks(){
   const head=$('#thList'),c=ed.clip;
   head.innerHTML=`<div class="th th-v"><span class="th-ico">${ic('film')}</span><div class="th-name"><b>Video</b><span id="vSub"></span></div></div>`+
@@ -914,7 +941,7 @@ function buildTracks(){
     d.innerHTML=`<div class="lane-tint"></div><canvas></canvas><span class="lane-tag">${ic('vol-x','xs')}Muted</span>`;els.lanes.insertBefore(d,els.maskL);});
   ed.tracks.forEach(syncTrack);syncVideoSub();
 }
-function syncVideoSub(){const v=$('#vSub'),c=ed.clip;if(v&&c)v.textContent=`${c.height}p${fpsR(c)} · `+(ed.canvas==='16:9'?`Original ${aspectLbl(c)}`:'Vertical 9:16');}
+function syncVideoSub(){const v=$('#vSub'),c=ed.clip;if(v&&c)v.textContent=`${c.height}p${fpsR(c)} · `+canvasLbl(ed.canvas,c).replace(' · ',' ');}
 function syncTrack(t){
   const h=$(`.th[data-track="${t.id}"]`),l=laneOf(t);if(!h||!l)return;
   h.classList.toggle('is-muted',t.muted);l.classList.toggle('is-muted',t.muted);
@@ -970,9 +997,10 @@ function drawLane(t){
 function renderFilm(){
   const u=ed.film?BT.src(ed.film):'';
   if(!u){els.laneV.innerHTML='';return;}
-  const url=esc(u.replace(/'/g,'%27')),h=els.laneV.clientHeight||50,fw=Math.round(h*16/9),n=Math.ceil(tl.W/fw);let s='';
+  const url=esc(u.replace(/'/g,'%27')),wide=isWide(ed.clip),h=els.laneV.clientHeight||50,fw=Math.round(h*16/9),n=Math.ceil(tl.W/fw);let s='';
   for(let i=0;i<n;i++){const sx=50+Math.sin(i*.9)*22,sy=48+Math.cos(i*.55)*14,sc=118+Math.sin(i*.45)*14;
-    s+=`<div class="fr" style="left:${i*fw}px;width:${fw}px;background-image:url('${url}');background-size:${sc.toFixed(1)}% auto;background-position:${sx.toFixed(1)}% ${sy.toFixed(1)}%"></div>`;}
+    // sized by height for a clip wider than 16:9, so each frame is still filled
+    s+=`<div class="fr" style="left:${i*fw}px;width:${fw}px;background-image:url('${url}');background-size:${wide?`auto ${sc.toFixed(1)}%`:`${sc.toFixed(1)}% auto`};background-position:${sx.toFixed(1)}% ${sy.toFixed(1)}%"></div>`;}
   els.laneV.innerHTML=s;
 }
 function renderRuler(){
@@ -1027,7 +1055,7 @@ function setSaved(state){
 }
 function scheduleSave(){
   if(!ed.clip)return;const c=ed.clip;
-  const edits={inT:r3(ed.inT),outT:r3(ed.outT),markers:ed.markers.map(r3)};
+  const edits={inT:r3(ed.inT),outT:r3(ed.outT),markers:ed.markers.map(r3),canvas:ed.canvas,cropX:r3(ed.cropX),cropY:r3(ed.cropY),cropH:r3(ed.cropH)};
   c.edits=edits;savePending={clipId:c.id,edits};setSaved('busy');
   clearTimeout(saveT);saveT=setTimeout(flushSave,400);
 }
@@ -1284,12 +1312,78 @@ function commitTime(which,inp){
 });
 $('#resetTrim').addEventListener('click',()=>{const b=trimState();ed.inT=0;ed.outT=ed.dur;pushUndo(b);updateSel();toast('Selected the full clip','scissors',UNDO);});
 
-/* ---------- canvas + crop (sent with the export request; remembered for this session) */
-function setCanvas(c){ed.canvas=c;$$('.copt').forEach(b=>b.classList.toggle('on',b.dataset.canvas===c));$('#canvasSum').textContent=c==='16:9'?`Original · ${ed.clip?aspectLbl(ed.clip):'16:9'}`:'Vertical · 9:16';$('#crop').hidden=c==='16:9';syncVideoSub();positionCrop();updateEstimates();}
-$$('.copt').forEach(b=>b.addEventListener('click',()=>{setCanvas(b.dataset.canvas);rememberMix();}));
-function positionCrop(){const p=$('#preview'),w=$('#cropWin');if(!p.clientWidth)return;const cw=p.clientHeight*9/16,max=p.clientWidth-cw;w.style.left=(ed.cropX*max)+'px';}
-$('#cropWin').addEventListener('pointerdown',e=>{const p=$('#preview'),x0=e.clientX,c0=ed.cropX,max=p.clientWidth-p.clientHeight*9/16;e.preventDefault();
-  const mv=ev=>{ed.cropX=clamp(c0+(ev.clientX-x0)/max,0,1);positionCrop();};window.addEventListener('pointermove',mv);window.addEventListener('pointerup',()=>{window.removeEventListener('pointermove',mv);rememberMix();},{once:true});});
+/* ---------- canvas + crop: saved with the clip's edits (so its thumbnails show the same frame) and sent with the
+   export request. Original, 16:9 crop (for clips wider than that, like ultrawide ones) or Vertical (a 9:16 crop). */
+/* one wording everywhere (the Canvas header, the Video track): an ultrawide clip's tiles name the shape first */
+const canvasLbl=(cv,c)=>isWide(c)?(cv==='9:16'?'9:16 · vertical crop':cv==='16:9'?'16:9 · crop':`${aspectLbl(c)} · original`)
+  :cv==='9:16'?'Vertical · 9:16':`Original · ${c?aspectLbl(c):'16:9'}`;
+function setCanvas(cv){
+  if(cv==='16:9'&&!isWide(ed.clip))cv='original';
+  ed.canvas=cv;$$('.copt').forEach(b=>{const on=b.dataset.canvas===cv;b.classList.toggle('on',on);b.setAttribute('aria-pressed',on);});
+  $('#canvasSum').textContent=canvasLbl(cv,ed.clip);
+  const crop=cv!=='original';$('#crop').hidden=!crop;$('#canvasHint').hidden=!crop;$('#cropTxt').textContent=`${cv} crop`;
+  $('#cropWin').setAttribute('aria-label',`${cv} crop: arrow keys move it, plus and minus resize it, 0 or a double-click makes it full height`);
+  syncVideoSub();positionCrop();updateEstimates();
+}
+/* switching between the two crops keeps the crop centred on the same spot (the game), at the same height */
+$$('.copt').forEach(b=>b.addEventListener('click',()=>{const to=b.dataset.canvas,from=ed.canvas;if(to===from)return;
+  const ce=from!=='original'&&to!=='original'?cropCentre():null;setCanvas(to);if(ce){placeCrop(ce.cx,ce.cy,ed.cropH);positionCrop();}scheduleSave();}));
+/* The video sits in the 16:9 preview like object-fit: contain (an ultrawide clip has bars above and below it). */
+function videoBox(){
+  const p=$('#preview'),W=p.clientWidth,H=p.clientHeight,c=ed.clip,r=c&&c.height?c.width/c.height:16/9;
+  let w=W,h=W/r;if(h>H){h=H;w=H*r;}
+  return {x:(W-w)/2,y:(H-h)/2,w,h};
+}
+/* the crop's centre, as shares of the frame, and putting a crop of height h around one */
+function cropCentre(){const {cwF,chF}=cropFrac(ed.clip,ed.canvas,ed.cropH);return {cx:ed.cropX*(1-cwF)+cwF/2,cy:ed.cropY*(1-chF)+chF/2};}
+function placeCrop(cx,cy,h){
+  ed.cropH=clamp(h,MIN_CROP_H,1);const {cwF,chF}=cropFrac(ed.clip,ed.canvas,ed.cropH);
+  ed.cropX=cwF>=.999?.5:clamp((cx-cwF/2)/(1-cwF),0,1);ed.cropY=chF>=.999?.5:clamp((cy-chF/2)/(1-chF),0,1);
+}
+/* after any change to the crop: redraw it, refresh the export details (its size caps the resolution), save */
+function cropChanged(){positionCrop();updateEstimates();scheduleSave();}
+function positionCrop(){
+  const p=$('#preview'),win=$('#cropWin');if(!p.clientWidth||!ed.clip||ed.canvas==='original')return;
+  const b=videoBox(),{cwF,chF}=cropFrac(ed.clip,ed.canvas,ed.cropH),w=cwF*b.w,h=chF*b.h;
+  Object.assign(win.style,{left:(b.x+ed.cropX*(1-cwF)*b.w)+'px',top:(b.y+ed.cropY*(1-chF)*b.h)+'px',width:w+'px',height:h+'px'});
+  win.classList.toggle('narrow',w<190);
+}
+/* drag the crop to move it, its corner to resize it (the opposite corner stays put); the wheel resizes it around its
+   centre. Saved when the drag ends. */
+$('#cropWin').addEventListener('pointerdown',e=>{
+  if(e.button!==0)return;e.preventDefault();$('#cropWin').focus({preventScroll:true});
+  const b=videoBox(),x0=e.clientX,y0=e.clientY,s={x:ed.cropX,y:ed.cropY,h:ed.cropH},f0=cropFrac(ed.clip,ed.canvas,s.h);
+  const corner=!!e.target.closest('.crop-size'),left0=s.x*(1-f0.cwF),top0=s.y*(1-f0.chF);
+  const mv=ev=>{
+    const dx=(ev.clientX-x0)/b.w,dy=(ev.clientY-y0)/b.h;
+    if(corner){
+      // grow with whichever way the pointer moved further, in the crop's shape
+      const k=Math.max(dx/f0.cwF,dy/f0.chF);ed.cropH=clamp(s.h*(1+k),MIN_CROP_H,1);
+      const f=cropFrac(ed.clip,ed.canvas,ed.cropH);
+      ed.cropX=f.cwF>=.999?.5:clamp(left0/(1-f.cwF),0,1);ed.cropY=f.chF>=.999?.5:clamp(top0/(1-f.chF),0,1);
+    }else{
+      if(f0.cwF<.999)ed.cropX=clamp(s.x+dx/(1-f0.cwF),0,1);
+      if(f0.chF<.999)ed.cropY=clamp(s.y+dy/(1-f0.chF),0,1);
+    }
+    positionCrop();
+  };
+  window.addEventListener('pointermove',mv);
+  window.addEventListener('pointerup',()=>{window.removeEventListener('pointermove',mv);if(ed.cropX!==s.x||ed.cropY!==s.y||ed.cropH!==s.h)cropChanged();},{once:true});
+});
+$('#cropWin').addEventListener('wheel',e=>{e.preventDefault();const ce=cropCentre();placeCrop(ce.cx,ce.cy,ed.cropH*(e.deltaY>0?.95:1/.95));cropChanged();},{passive:false});
+/* double-click: back to full height, around the same centre */
+$('#cropWin').addEventListener('dblclick',e=>{if(e.target.closest('.crop-size'))return;const ce=cropCentre();placeCrop(ce.cx,ce.cy,1);cropChanged();});
+/* keys, with the crop focused: arrows move it (Shift: further), + and − resize it, Home / End go to the edges */
+$('#cropWin').addEventListener('keydown',e=>{
+  const st=e.shiftKey?.1:.02,mv={ArrowLeft:[-st,0],ArrowRight:[st,0],ArrowUp:[0,-st],ArrowDown:[0,st]}[e.key];
+  if(mv){ed.cropX=clamp(ed.cropX+mv[0],0,1);ed.cropY=clamp(ed.cropY+mv[1],0,1);}
+  else if(e.key==='+'||e.key==='='||e.key==='-'||e.key==='_'){const ce=cropCentre();placeCrop(ce.cx,ce.cy,ed.cropH+(e.key==='-'||e.key==='_'?-.05:.05));}
+  else if(e.key==='Home')ed.cropX=0;
+  else if(e.key==='End')ed.cropX=1;
+  else if(e.key==='0'){const ce=cropCentre();placeCrop(ce.cx,ce.cy,1);}
+  else return;
+  e.preventDefault();e.stopPropagation();cropChanged();
+});
 
 /* ---------- inspector: sections open in priority order while they fit above the pinned Export card */
 let insUser=false,fitT=0;
@@ -1347,7 +1441,7 @@ function openClip(c){
   ed.inT=a;ed.outT=b;ed.t=a;
   ed.markers=(e&&e.markers||[]).filter(m=>isFinite(m)&&m>=0&&m<=dur).sort((x,y)=>x-y);
   ed.zoom=1;ed.preset=S.settings.defaultPreset;ed.customMB=S.settings.customMb;
-  ed.canvas=mem?mem.canvas:'16:9';ed.cropX=mem?mem.cropX:.5;
+  ed.canvas=canvasOf(c);{const k=cropOf(c);ed.cropX=k.x;ed.cropY=k.y;ed.cropH=k.h;}
   ed.tracks=trackState(c,mem);
   hist.u.length=0;hist.r.length=0;hideGhost();
   setSaved(e?'ok':'none');
@@ -1370,7 +1464,11 @@ function syncClipChrome(){
   $('#locLbl').textContent=shortPath(dir,26);$('#locBtn').dataset.tip=c.path;
   const l=gameList(),i=l.indexOf(c);$('#cbCount').textContent=i>=0?`${i+1} of ${l.length}`:'';
   $('#prevClip').style.opacity=i>0?1:.4;$('#nextClip').style.opacity=i>=0&&i<l.length-1?1:.4;
-  $('#coptOrig').textContent=`${aspectLbl(c)} · ${c.height}p`;
+  // the 16:9 crop only for a clip wider than 16:9; the three options are then compact tiles in one row
+  const wide=isWide(c);$('#coptWide').hidden=!wide;$('.canvas-opts').classList.toggle('three',wide);$('#coptOrigIc').className=wide?'uw':'ls';
+  // tiles name the shape first (21:9 / 16:9 / 9:16), then what it is; two options keep their names and details
+  const tile=(cv,b,s)=>{const t=$(`.copt[data-canvas="${cv}"]`);$('b',t).textContent=b;$('span:not(.ci)',t).textContent=s;};
+  tile('original',wide?aspectLbl(c):'Original',wide?'original':`${aspectLbl(c)} · ${c.height}p`);tile('16:9','16:9','crop');tile('9:16',wide?'9:16':'Vertical',wide?'vertical crop':'9:16 · phones');
   $('#detKv').innerHTML=[['Game',esc(c.game)],['Recorded',longDate(d)],['Length',fmt(c.duration)],['Video',`${c.width}×${c.height} · ${fpsR(c)} fps`],['Bitrate',fmtK(c.videoKbps)],
     ['Audio',`${n} track${n===1?'':'s'}${n?' · '+c.audioTracks.map(t=>esc(trackLabel(c,t.index))).join(', '):''}`],['Source',c.source==='gg'?'SteelSeries GG':'Backtrack']].map(([k,v])=>`<dt>${k}</dt><dd>${v}</dd>`).join('');
   $('#detSum').textContent=`${fmtK(c.videoKbps)} · ${n} audio track${n===1?'':'s'}`;
@@ -1407,13 +1505,15 @@ const PRESETS=[
 const P=id=>PRESETS.find(p=>p.id===id)||PRESETS[0];
 // o lets callers estimate another clip / length / limit (the library's Quick send, a running export)
 function estimate(pid=ed.preset,o={}){
-  const c=o.clip||ed.clip,dur=Math.max(.1,o.dur!=null?o.dur:ed.outT-ed.inT),vert=o.vert!=null?o.vert:ed.canvas==='9:16';
+  const c=o.clip||ed.clip,dur=Math.max(.1,o.dur!=null?o.dur:ed.outT-ed.inT),cv=o.canvas!=null?o.canvas:ed.canvas,vert=cv==='9:16',wide=cv==='16:9'&&isWide(c);
   const limit=o.limit!==undefined?o.limit:P(pid).limit();
-  const srcK=c.sizeBytes*8/1000/c.duration,srcRes=c.height,srcFps=fpsR(c);
+  // a crop is never exported taller than the part it keeps (export.rs plan)
+  const cropH=o.crop?o.crop.h:o.clip?cropOf(o.clip).h:ed.cropH;
+  const srcK=c.sizeBytes*8/1000/c.duration,srcRes=vert||wide?even(c.height*clamp(cropH,MIN_CROP_H,1)):c.height,srcFps=fpsR(c);
   const copyMB=(c.videoKbps+COPY_AK)*dur/8000,selMB=MBof(c.sizeBytes)*dur/c.duration;
-  const base={pid,dur,limit,srcK,vert,clip:c,selMB};
-  if(pid==='orig'||(limit&&copyMB<=limit*.95&&!vert)){
-    return Object.assign(base,{mode:'copy',size:copyMB,res:srcRes,fps:srcFps,vk:c.videoKbps,ak:COPY_AK,q:'Original',lv:5,fits:limit?copyMB<=limit:copyMB<=10,encSec:Math.max(1,dur/40)});
+  const base={pid,dur,limit,srcK,vert,wide,srcRes,clip:c,selMB};
+  if(pid==='orig'||(limit&&copyMB<=limit*.95&&!vert&&!wide)){
+    return Object.assign(base,{mode:'copy',size:copyMB,res:c.height,fps:srcFps,vk:c.videoKbps,ak:COPY_AK,q:'Original',lv:5,fits:limit?copyMB<=limit:copyMB<=10,encSec:Math.max(1,dur/40)});
   }
   const target=limit*.95;let total=target*8000/dur,ak=128,vk=total-ak;if(vk<1500){ak=96;vk=total-ak;}
   let capped=false;if(vk>20000){vk=20000;capped=true;}
@@ -1424,7 +1524,7 @@ function estimate(pid=ed.preset,o={}){
   return Object.assign(base,{mode:'encode',size,res:Math.min(L.res,srcRes),fps:Math.min(L.fps,srcFps),vk,ak,q:L.q,lv:L.lv,tier:L,fits:true,target,thresholds,encSec:Math.max(3,dur*.45)});
 }
 const even=n=>Math.max(2,Math.round(n/2)*2);
-function resLbl(e){const c=e.clip;if(e.mode==='copy')return `${c.width} × ${c.height}`;const h=e.res;return e.vert?`${even(h*9/16)} × ${h}`:`${even(h*c.width/c.height)} × ${h}`;}
+function resLbl(e){const c=e.clip;if(e.mode==='copy')return `${c.width} × ${c.height}`;const h=e.res;return e.vert?`${even(h*9/16)} × ${h}`:e.wide?`${even(h*16/9)} × ${h}`:`${even(h*c.width/c.height)} × ${h}`;}
 const tierLbl=(res,fps)=>`${res}p${fps}`;
 let measureCtx=null;
 function textW(t,font){if(!measureCtx)measureCtx=document.createElement('canvas').getContext('2d');measureCtx.font=`${font} ${getComputedStyle(document.body).fontFamily}`;return measureCtx.measureText(t).width;}
@@ -1432,7 +1532,7 @@ function textW(t,font){if(!measureCtx)measureCtx=document.createElement('canvas'
    (720p60 → 1080p60, 720p30 → 720p60, …). Sideways moves (720p60 → 1080p30) aren't worth cutting the moment for. */
 function upgradeFor(e){
   const idx=LADDER.indexOf(e.tier);if(idx<=0)return null;
-  const capT=l=>({res:Math.min(l.res,e.clip.height),fps:Math.min(l.fps,fpsR(e.clip))});
+  const capT=l=>({res:Math.min(l.res,e.srcRes),fps:Math.min(l.fps,fpsR(e.clip))});   // a crop caps it at the height it keeps
   for(let j=idx-1;j>=0;j--){
     const n=capT(LADDER[j]);
     if(n.res>=e.res&&n.fps>=e.fps&&(n.res>e.res||n.fps>e.fps)){const s=Math.floor(e.thresholds[j].maxDur);return s>=3&&s<e.dur?{j,res:n.res,fps:n.fps,s}:null;}
@@ -1442,7 +1542,7 @@ function upgradeFor(e){
 function advice(e){
   if(e.mode==='copy'){
     if(e.pid==='orig'&&e.size>10)return {kind:'warn',icon:'alert',title:`${fmtMB(e.size)} is over Discord's free 10 MB limit`,text:'Fine with Nitro. To share without it, use the Discord · 10 MB preset.',fix:{label:'Use 10 MB',preset:'d10'}};
-    return {kind:'ok',icon:'check-c',title:'No re-encode needed',text:`Your ${e.dur.toFixed(1)} s selection already fits, so the video is copied exactly (${tierLbl(e.res,e.fps)}) and the audio tracks are mixed into one.${e.vert?' Original quality is an exact copy, so it stays in its original shape.':''}`};
+    return {kind:'ok',icon:'check-c',title:'No re-encode needed',text:`Your ${e.dur.toFixed(1)} s selection already fits, so the video is copied exactly (${tierLbl(e.res,e.fps)}) and the audio tracks are mixed into one.${e.vert||e.wide?' Original quality is an exact copy, so it stays in its original shape.':''}`};
   }
   if(e.lv<=1){const t=Math.floor(e.thresholds[2].maxDur);return {kind:e.lv===0?'bad':'warn',icon:'alert',title:e.lv===0?`Too long for ${fmtNum(e.limit)} MB`:`This will look blurry (${tierLbl(e.res,e.fps)})`,text:`${e.dur.toFixed(1)} s only gets ${fmtK(Math.max(0,e.vk))} at ${fmtNum(e.limit)} MB.${t>=1?` Trim to ${t} s or less for 720p60.`:' Pick a bigger size limit.'}`,fix:t>=1?{label:`Trim to ${t} s`,trim:t}:null};}
   const up=upgradeFor(e);
@@ -1519,7 +1619,9 @@ function updateEstimates(){
     if(tp.fix.trim){fb.onmouseenter=fb.onfocus=()=>{const p=planTrim(tp.fix.trim);fb.dataset.tip=`${fmt(p.inT,1)} – ${fmt(p.outT,1)} · ${planWhy(p)}`;showGhost(tp.fix.trim);};fb.onmouseleave=fb.onblur=hideGhost;}}
   const [fk,fi,fl]=fitState(e);const fit=$('#ecFit');fit.className='fit '+fk;fit.innerHTML=ic(fi,'xs')+fl;
   const lim=e.limit||10;$('#ecFill').style.width=Math.min(100,e.size/lim*100)+'%';$('#ecMeter').className='meter'+(fk==='bad'?' bad':fk==='warn'?' warn':'');
-  $('#ecSpec').textContent=e.mode==='copy'?`${tierLbl(e.res,e.fps)} · ${fmtK(e.vk)} · no re-encode`:`${tierLbl(e.res,e.fps)}${e.vert?' vertical':''} · ${fmtK(e.vk)}`;
+  $('#ecSpec').textContent=e.mode==='copy'?`${tierLbl(e.res,e.fps)} · ${fmtK(e.vk)} · no re-encode`:`${tierLbl(e.res,e.fps)}${e.vert?' vertical':e.wide?' 16:9':''} · ${fmtK(e.vk)}`;
+  // an odd height like 702p is the crop's own height: say so, so it doesn't read as a mistake
+  $('#ecSpec').title=e.mode!=='copy'&&(e.vert||e.wide)&&e.tier&&e.res<Math.min(e.tier.res,e.clip.height)?`As tall as your crop (${e.res} px), so it's never upscaled`:'';
   qbars($('#ecQ'),e);$('#ecQl').textContent=e.q;
   $('#railSize').textContent=fmtMB(e.size).replace(' MB','MB');
   $('#saveCopyMeta').textContent=` · lossless · ${fmtMB(e.selMB)}`;
@@ -1537,7 +1639,7 @@ function renderPresets(){
 }
 function renderModal(){
   const c=ed.clip,e=estimate();
-  $('#mSub').innerHTML=`${esc(c.game)} — ${whenLabel(new Date(c.recordedAt))} · <span class="tnum">${fmt(ed.inT)} → ${fmt(ed.outT)}</span> · <b>${e.dur.toFixed(1)} s</b>${ed.canvas==='9:16'?' · vertical 9:16':''}`;
+  $('#mSub').innerHTML=`${esc(c.game)} — ${whenLabel(new Date(c.recordedAt))} · <span class="tnum">${fmt(ed.inT)} → ${fmt(ed.outT)}</span> · <b>${e.dur.toFixed(1)} s</b>${ed.canvas==='9:16'?' · vertical 9:16':ed.canvas==='16:9'?' · 16:9 crop':''}`;
   const focused=document.activeElement&&document.activeElement.id==='customMB';
   if(!focused)renderPresets();
   $('#mSize').textContent=fmtMB(e.size);
@@ -1586,11 +1688,11 @@ const exp={running:false,gen:0,req:null,est:null,result:null,error:null,direct:f
 function buildRequest(range){
   const c=ed.clip,limit=ed.preset==='orig'?null:P(ed.preset).limit();
   return {clipId:c.id,start:r3(range?range.start:ed.inT),end:r3(range?range.end:ed.outT),preset:ed.preset,limitMb:limit,
-    canvas:range&&range.quick?'16:9':ed.canvas,cropX:r3(ed.cropX),
+    canvas:ed.canvas,cropX:r3(ed.cropX),cropY:r3(ed.cropY),cropH:r3(ed.cropH),
     tracks:ed.tracks.map(t=>({index:t.index,volume:Math.round(t.vol)/100,muted:!!t.muted})),
     fileName:($('#fname').value||'').trim()||defaultName(),copyToClipboard:!!$('#autoCopy').checked};
 }
-const reqEstimate=req=>{const c=S.byId[req.clipId]||ed.clip;return estimate(req.preset,{clip:c,dur:req.end-req.start,vert:req.canvas==='9:16',limit:req.limitMb});};
+const reqEstimate=req=>{const c=S.byId[req.clipId]||ed.clip;return estimate(req.preset,{clip:c,dur:req.end-req.start,canvas:req.canvas,crop:{h:req.cropH},limit:req.limitMb});};
 /* export right away with the current size (split button, E, rail, library Quick send) */
 function exportNow(range){
   if(!ed.clip)return;
@@ -1605,7 +1707,7 @@ function exportNow(range){
 function quickSend(c){if(!c)return;openClip(c);const p=quickPlan(c);exportNow({start:p.inT,end:p.outT,quick:true});}
 function renderProgressStart(req){
   const c=S.byId[req.clipId]||ed.clip,e=exp.est;
-  $('#pThumbWrap').innerHTML=thumbHTML(c&&c.thumb,{eager:true});
+  $('#pThumbWrap').innerHTML=thumbHTML(c&&c.thumb,{eager:true,clip:c,canvas:e.mode==='copy'?'original':req.canvas,crop:{x:req.cropX,y:req.cropY,h:req.cropH}});
   $('#pFill').style.width='0%';$('#pScan').style.width='0%';$('#pPct').textContent='0%';
   $('#pStage').textContent=e.mode==='copy'?'Copying your selection…':'Pass 1 of 2 · Analysing…';
   $('#pEta').textContent='Estimating time…';
@@ -1676,7 +1778,7 @@ function renderDone(){
   const mb=MBof(res.sizeBytes),lim=req.limitMb,over=!!lim&&mb>lim;
   $('#dSub').innerHTML=lim?(over?`<b class="tnum" style="color:var(--warn)">${fmtMB(mb)}</b> — over the ${fmtNum(lim)} MB limit, so Discord may refuse it.`:`<b class="tnum" style="color:var(--text-1)">${fmtMB(mb)}</b> — under the ${fmtNum(lim)} MB limit with ${(lim-mb).toFixed(1)} MB to spare.`)
     :`<b class="tnum" style="color:var(--text-1)">${fmtMB(mb)}</b> — original quality, video not re-encoded.`;
-  $('#dThumbWrap').innerHTML=thumbHTML(c&&c.thumb,{eager:true});$('#dDur').textContent=fmtLen(res.durationSec);
+  $('#dThumbWrap').innerHTML=thumbHTML(c&&c.thumb,{eager:true,clip:c,canvas:res.mode==='copy'?'original':req.canvas,crop:{x:req.cropX,y:req.cropY,h:req.cropH}});$('#dDur').textContent=fmtLen(res.durationSec);
   $('#dName').textContent=res.fileName;$('#dName').title=res.path;
   $('#dMeta').textContent=`${fmtMB(mb)} · MP4 · ${(+res.durationSec).toFixed(1)} s`;
   $('#dFacts').innerHTML=`<dt>Video</dt><dd>${res.width} × ${res.height} · ${res.fps} fps · ${fmtK(res.videoKbps)}${res.mode==='copy'?' · exact copy':''}</dd><dt>Audio</dt><dd>${c?mixLine(c,req.tracks):''}${res.audioKbps?` <span class="off">· ${res.audioKbps} kbps</span>`:''}</dd><dt>Part</dt><dd>${fmt(req.start)} → ${fmt(req.end)}${c?` of the ${fmtLen(c.duration)} clip`:''}</dd>`;
